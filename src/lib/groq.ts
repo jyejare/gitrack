@@ -1,0 +1,122 @@
+import { requireEnv } from "@/lib/env";
+
+const DEFAULT_MODEL = "llama3-70b-8192";
+
+type ChatCompletionsResponse = {
+  choices?: Array<{
+    message?: { content?: string | null };
+  }>;
+};
+
+async function callGroqChatCompletions(input: {
+  model: string;
+  prompt: string;
+  maxTokens: number;
+}) {
+  const apiKey = requireEnv("GROQ_API_KEY");
+
+  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: input.model,
+      messages: [{ role: "user", content: input.prompt }],
+      temperature: 0.2,
+      max_tokens: input.maxTokens,
+    }),
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Groq ${res.status}: ${text.slice(0, 800)}`);
+  }
+
+  const json = (await res.json()) as ChatCompletionsResponse;
+  const content = json.choices?.[0]?.message?.content;
+  return (content ?? "").trim();
+}
+
+export async function reviewPullWithGroq(input: {
+  owner: string;
+  repo: string;
+  number: number;
+  title: string;
+  diff: string;
+  maxDiffChars: number;
+}) {
+  const model = process.env.GROQ_MODEL ?? DEFAULT_MODEL;
+
+  const truncated =
+    input.diff.length > input.maxDiffChars
+      ? `${input.diff.slice(0, input.maxDiffChars)}\n\n[DIFF TRUNCATED FOR SIZE]`
+      : input.diff;
+
+  const userPrompt = [
+    `You are a staff engineer doing a PR review.`,
+    `Repository: ${input.owner}/${input.repo}`,
+    `PR #${input.number}: ${input.title}`,
+    ``,
+    "Diff:",
+    truncated,
+    ``,
+    "Return markdown with sections: Summary, Risks, Suggested follow-ups, Test gaps.",
+    "Be concrete and reference files/lines when visible in the diff.",
+  ].join("\n");
+
+  const markdown = await callGroqChatCompletions({
+    model,
+    prompt: userPrompt,
+    maxTokens: 4096,
+  });
+
+  return { model, markdown };
+}
+
+export async function insightsPullWithGroq(input: {
+  owner: string;
+  repo: string;
+  number: number;
+  title: string;
+  diff: string;
+  maxDiffChars: number;
+}) {
+  const model = process.env.GROQ_MODEL ?? DEFAULT_MODEL;
+
+  const truncated =
+    input.diff.length > input.maxDiffChars
+      ? `${input.diff.slice(0, input.maxDiffChars)}\n\n[DIFF TRUNCATED FOR SIZE]`
+      : input.diff;
+
+  const userPrompt = [
+    `You are a staff engineer helping reviewers triage a GitHub pull request.`,
+    `Your job is NOT to write a full PR review. Instead, produce reviewer-focused insights that make it faster to decide what to look at and what risk to watch for.`,
+    `Repository: ${input.owner}/${input.repo}`,
+    `PR #${input.number}: ${input.title}`,
+    ``,
+    "Diff:",
+    truncated,
+    ``,
+    `Return markdown with these sections (short but specific):`,
+    `1) "At a glance" (3-5 bullets describing the most important changes)`,
+    `2) "Reviewer checklist" (5-10 actionable checks)`,
+    `3) "Risk hotspots" (call out potential failure modes, security/perf/maintainability concerns when visible)`,
+    `4) "Testing suggestions" (what tests to run or add; include unit/integration/e2e if obvious)`,
+    ``,
+    `Constraints:`,
+    `- If you cannot see enough context from the diff, say so.`,
+    `- Be concrete: prefer file/area references when available.`,
+  ].join("\n");
+
+  const markdown = await callGroqChatCompletions({
+    model,
+    prompt: userPrompt,
+    maxTokens: 1800,
+  });
+
+  return { model, markdown };
+}
+
