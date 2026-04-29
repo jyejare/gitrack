@@ -10,7 +10,7 @@ type AiModeContextValue = {
 
 const AiModeContext = createContext<AiModeContextValue | null>(null);
 
-const STORAGE_KEY = "github_pr_insights.aiMode";
+const STORAGE_KEY = "gitrack.aiMode";
 
 export function AiModeProvider({ children }: { children: React.ReactNode }) {
   const [aiMode, setAiModeState] = useState(false);

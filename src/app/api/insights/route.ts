@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { insightsPullWithClaude } from "@/lib/anthropic";
 import { insightsPullWithGroq } from "@/lib/groq";
+import { insightsPullWithOllama } from "@/lib/ollama";
 import { getPullDetail, getPullDiff } from "@/lib/github";
 import { getLlmProvider } from "@/lib/llm";
 
@@ -37,24 +38,14 @@ export async function POST(req: NextRequest) {
     const diff = await getPullDiff(owner, repo, number);
 
     const provider = getLlmProvider();
-    const result =
+    const insightsArgs = { owner, repo, number, title: detail.title, diff, maxDiffChars };
+    const insightsFn =
       provider === "groq"
-        ? await insightsPullWithGroq({
-            owner,
-            repo,
-            number,
-            title: detail.title,
-            diff,
-            maxDiffChars,
-          })
-        : await insightsPullWithClaude({
-            owner,
-            repo,
-            number,
-            title: detail.title,
-            diff,
-            maxDiffChars,
-          });
+        ? insightsPullWithGroq
+        : provider === "ollama"
+          ? insightsPullWithOllama
+          : insightsPullWithClaude;
+    const result = await insightsFn(insightsArgs);
 
     return NextResponse.json({
       number,

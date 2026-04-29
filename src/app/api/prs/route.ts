@@ -2,11 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   getPullDetail,
   listCheckRunsForRef,
+  listCommitStatuses,
   listPullRequests,
   listPullReviews,
   parseLinkHeader,
 } from "@/lib/github";
-import { computeReadiness } from "@/lib/readiness";
+import { computeReadiness, summarizeChecks } from "@/lib/readiness";
 
 export const runtime = "nodejs";
 
@@ -30,30 +31,22 @@ export async function GET(req: NextRequest) {
 
     const enriched = await Promise.all(
       pulls.map(async (p) => {
-        const checkOwner = p.head.repo?.owner.login ?? owner;
-        const checkRepo = p.head.repo?.name ?? repo;
-        const [detail, reviews, checkRuns] = await Promise.all([
+        const [detail, reviews, checkRuns, commitStatuses] = await Promise.all([
           getPullDetail(owner, repo, p.number),
           listPullReviews(owner, repo, p.number),
-          listCheckRunsForRef(checkOwner, checkRepo, p.head.sha),
+          listCheckRunsForRef(owner, repo, p.head.sha).catch(() => []),
+          listCommitStatuses(owner, repo, p.head.sha).catch(() => []),
         ]);
+        const allChecks = [...checkRuns, ...commitStatuses];
 
+        const checks = summarizeChecks(allChecks);
         const readiness = computeReadiness({
           draft: detail.draft,
           mergeable: detail.mergeable,
           mergeable_state: detail.mergeable_state,
           reviews,
-          checkRuns,
+          checkRuns: allChecks,
         });
-
-        const failing = checkRuns.filter(
-          (r) =>
-            r.status === "completed" &&
-            (r.conclusion === "failure" ||
-              r.conclusion === "timed_out" ||
-              r.conclusion === "action_required"),
-        ).length;
-        const pending = checkRuns.filter((r) => r.status !== "completed").length;
 
         return {
           number: detail.number,
@@ -73,7 +66,7 @@ export async function GET(req: NextRequest) {
           deletions: detail.deletions,
           changed_files: detail.changed_files,
           readiness,
-          checks: { total: checkRuns.length, failing, pending },
+          checks: { total: checks.total, failing: checks.failing, pending: checks.pending },
           reviews,
         };
       }),

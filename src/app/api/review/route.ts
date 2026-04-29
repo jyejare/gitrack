@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { reviewPullWithClaude } from "@/lib/anthropic";
 import { reviewPullWithGroq } from "@/lib/groq";
+import { reviewPullWithOllama } from "@/lib/ollama";
 import { getPullDetail, getPullDiff } from "@/lib/github";
 import { getLlmProvider } from "@/lib/llm";
 
@@ -37,24 +38,14 @@ export async function POST(req: NextRequest) {
     const diff = await getPullDiff(owner, repo, number);
 
     const provider = getLlmProvider();
-    const result =
+    const reviewArgs = { owner, repo, number, title: detail.title, diff, maxDiffChars };
+    const reviewFn =
       provider === "groq"
-        ? await reviewPullWithGroq({
-            owner,
-            repo,
-            number,
-            title: detail.title,
-            diff,
-            maxDiffChars,
-          })
-        : await reviewPullWithClaude({
-            owner,
-            repo,
-            number,
-            title: detail.title,
-            diff,
-            maxDiffChars,
-          });
+        ? reviewPullWithGroq
+        : provider === "ollama"
+          ? reviewPullWithOllama
+          : reviewPullWithClaude;
+    const result = await reviewFn(reviewArgs);
 
     return NextResponse.json({
       number,

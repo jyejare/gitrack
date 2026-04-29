@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { AiModeProvider } from "@/components/AiModeContext";
+import { ThemeProvider } from "@/components/ThemeContext";
 
 export const metadata: Metadata = {
-  title: "GitHub PR Insights",
-  description: "PR readiness, checks, and on-demand Claude reviews for your org.",
+  title: "giTrack",
+  description: "PR readiness, checks, and AI-assisted reviews for your repos.",
 };
 
 export default function RootLayout({
@@ -13,11 +14,13 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" className="dark" suppressHydrationWarning>
       <body className="min-h-screen">
-        <AiModeProvider>
-          <div className="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-8">{children}</div>
-        </AiModeProvider>
+        <ThemeProvider>
+          <AiModeProvider>
+            <div className="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-8">{children}</div>
+          </AiModeProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

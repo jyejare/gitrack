@@ -2,16 +2,31 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Light mode (default) ─────────────────────────────────────────── */
 :root {
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 body {
-  @apply min-h-screen bg-slate-950 text-slate-100 antialiased;
+  @apply min-h-screen bg-slate-50 text-slate-900 antialiased;
 }
 
 body.ai-mode {
-  /* Slightly brighter background to make AI features visually distinct. */
+  background-color: rgb(248 250 252);
+  background-image: radial-gradient(1100px circle at 20% 0%, rgba(16, 185, 129, 0.08), transparent 60%),
+    radial-gradient(900px circle at 100% 20%, rgba(45, 212, 191, 0.06), transparent 55%);
+}
+
+/* ── Dark mode ────────────────────────────────────────────────────── */
+.dark {
+  color-scheme: dark;
+}
+
+.dark body {
+  @apply bg-slate-950 text-slate-100;
+}
+
+.dark body.ai-mode {
   background-color: rgb(2 6 23);
   background-image: radial-gradient(1100px circle at 20% 0%, rgba(16, 185, 129, 0.18), rgba(2, 6, 23, 0) 60%),
     radial-gradient(900px circle at 100% 20%, rgba(45, 212, 191, 0.14), rgba(2, 6, 23, 0) 55%);

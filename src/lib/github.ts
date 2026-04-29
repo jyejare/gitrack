@@ -15,12 +15,13 @@ export async function githubFetch(path: string, options: GithubFetchOptions = {}
       "X-GitHub-Api-Version": "2022-11-28",
       ...(init.headers ?? {}),
     },
-    next: next ?? { revalidate: 45 },
+    cache: "no-store",
+    ...(next ? { next } : {}),
   });
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`GitHub ${res.status} ${path}: ${text.slice(0, 500)}`);
+    throw new Error(`Failed to fetch GitHub ${path} (${res.status}): ${text.slice(0, 500)}`);
   }
 
   return res;
@@ -132,6 +133,37 @@ export async function listCheckRunsForRef(owner: string, repo: string, sha: stri
   return json.check_runs ?? [];
 }
 
+type CommitStatusItem = {
+  state: "success" | "failure" | "pending" | "error" | string;
+  context: string;
+};
+
+export async function listCommitStatuses(owner: string, repo: string, sha: string): Promise<CheckRun[]> {
+  const res = await githubFetch(
+    `/repos/${owner}/${repo}/commits/${sha}/status`,
+  );
+  const json = (await res.json()) as { statuses: CommitStatusItem[] };
+
+  // Dedupe by context (GitHub returns newest first, keep first per context)
+  const seen = new Set<string>();
+  const unique: CommitStatusItem[] = [];
+  for (const s of json.statuses ?? []) {
+    if (!seen.has(s.context)) {
+      seen.add(s.context);
+      unique.push(s);
+    }
+  }
+
+  return unique.map((s) => ({
+    name: s.context,
+    status: s.state === "pending" ? "in_progress" as const : "completed" as const,
+    conclusion:
+      s.state === "success" ? "success" as const
+        : s.state === "failure" || s.state === "error" ? "failure" as const
+          : null,
+  }));
+}
+
 export async function getPullDiff(owner: string, repo: string, number: number) {
   const token = requireEnv("GITHUB_TOKEN");
   const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/pulls/${number}`, {
@@ -144,7 +176,7 @@ export async function getPullDiff(owner: string, repo: string, number: number) {
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`GitHub diff ${res.status}: ${text.slice(0, 500)}`);
+    throw new Error(`Failed to fetch GitHub diff (${res.status}): ${text.slice(0, 500)}`);
   }
   return res.text();
 }

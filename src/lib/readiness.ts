@@ -17,19 +17,40 @@ export type ReadinessResult = {
   breakdown: ReadinessBreakdown;
 };
 
-function summarizeChecks(checkRuns: CheckRun[]) {
+/**
+ * Deduplicate check runs by name (re-runs produce multiple entries)
+ * and count only meaningful statuses (skip neutral/skipped/cancelled).
+ */
+export function summarizeChecks(checkRuns: CheckRun[]) {
+  // GitHub returns check runs newest-first; keep first occurrence per name
+  const latest = new Map<string, CheckRun>();
+  for (const r of checkRuns) {
+    if (!latest.has(r.name)) {
+      latest.set(r.name, r);
+    }
+  }
+
+  let total = 0;
   let failing = 0;
   let pending = 0;
-  for (const r of checkRuns) {
+  let passing = 0;
+  for (const r of latest.values()) {
     if (r.status !== "completed") {
+      total += 1;
       pending += 1;
       continue;
     }
+    if (r.conclusion === "skipped" || r.conclusion === "neutral" || r.conclusion === "cancelled") {
+      continue;
+    }
+    total += 1;
     if (r.conclusion === "failure" || r.conclusion === "timed_out" || r.conclusion === "action_required") {
       failing += 1;
+    } else {
+      passing += 1;
     }
   }
-  return { failing, pending };
+  return { total, failing, pending, passing };
 }
 
 function latestReviewStates(reviews: ReviewItem[]) {
@@ -104,7 +125,7 @@ export function computeReadiness(input: {
     score -= breakdown.checkPenalty;
   }
 
-  if (approvals > 0 && changesRequested === 0 && failing === 0) {
+  if (approvals > 0 && changesRequested === 0 && failing === 0 && pending === 0) {
     breakdown.approvalBonus = Math.min(5, approvals * 2);
     score += breakdown.approvalBonus;
   }
