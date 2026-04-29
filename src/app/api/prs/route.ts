@@ -6,16 +6,60 @@ import {
   listPullRequests,
   listPullReviews,
   parseLinkHeader,
+  searchPullRequests,
 } from "@/lib/github";
 import { computeReadiness, summarizeChecks } from "@/lib/readiness";
 
 export const runtime = "nodejs";
+
+async function enrichPull(owner: string, repo: string, prNumber: number) {
+  const [detail, reviews] = await Promise.all([
+    getPullDetail(owner, repo, prNumber),
+    listPullReviews(owner, repo, prNumber),
+  ]);
+  const [checkRuns, commitStatuses] = await Promise.all([
+    listCheckRunsForRef(owner, repo, detail.head.sha).catch(() => []),
+    listCommitStatuses(owner, repo, detail.head.sha).catch(() => []),
+  ]);
+  const allChecks = [...checkRuns, ...commitStatuses];
+  const checks = summarizeChecks(allChecks);
+  const readiness = computeReadiness({
+    draft: detail.draft,
+    mergeable: detail.mergeable,
+    mergeable_state: detail.mergeable_state,
+    reviews,
+    checkRuns: allChecks,
+  });
+
+  return {
+    number: detail.number,
+    title: detail.title,
+    author: detail.user?.login ?? "",
+    state: detail.state,
+    draft: detail.draft,
+    mergeable: detail.mergeable,
+    mergeable_state: detail.mergeable_state,
+    head: detail.head.ref,
+    base: detail.base.ref,
+    updated_at: detail.updated_at,
+    comments: detail.comments,
+    review_comments: detail.review_comments,
+    commits: detail.commits,
+    additions: detail.additions,
+    deletions: detail.deletions,
+    changed_files: detail.changed_files,
+    readiness,
+    checks: { total: checks.total, failing: checks.failing, pending: checks.pending },
+    reviews,
+  };
+}
 
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
     const owner = searchParams.get("owner")?.trim();
     const repo = searchParams.get("repo")?.trim();
+    const search = searchParams.get("search")?.trim();
     const page = Math.max(1, Number(searchParams.get("page") ?? "1") || 1);
     const perPage = Math.min(30, Math.max(1, Number(searchParams.get("perPage") ?? "10") || 10));
     const stateParam = (searchParams.get("state") ?? "open").toLowerCase();
@@ -26,50 +70,27 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "owner and repo are required" }, { status: 400 });
     }
 
+    if (search) {
+      const prNum = Number(search);
+      let prNumbers: number[];
+      if (Number.isFinite(prNum) && prNum > 0 && String(prNum) === search) {
+        prNumbers = [prNum];
+      } else {
+        prNumbers = await searchPullRequests(owner, repo, search, state);
+      }
+      const enriched = await Promise.all(
+        prNumbers.map((n) => enrichPull(owner, repo, n).catch(() => null)),
+      );
+      return NextResponse.json({
+        pulls: enriched.filter(Boolean),
+        pagination: { page: 1, perPage: prNumbers.length, nextPage: null, lastPage: 1, hasMore: false },
+      });
+    }
+
     const { pulls, link } = await listPullRequests(owner, repo, { state, page, perPage });
     const pages = parseLinkHeader(link);
-
     const enriched = await Promise.all(
-      pulls.map(async (p) => {
-        const [detail, reviews, checkRuns, commitStatuses] = await Promise.all([
-          getPullDetail(owner, repo, p.number),
-          listPullReviews(owner, repo, p.number),
-          listCheckRunsForRef(owner, repo, p.head.sha).catch(() => []),
-          listCommitStatuses(owner, repo, p.head.sha).catch(() => []),
-        ]);
-        const allChecks = [...checkRuns, ...commitStatuses];
-
-        const checks = summarizeChecks(allChecks);
-        const readiness = computeReadiness({
-          draft: detail.draft,
-          mergeable: detail.mergeable,
-          mergeable_state: detail.mergeable_state,
-          reviews,
-          checkRuns: allChecks,
-        });
-
-        return {
-          number: detail.number,
-          title: detail.title,
-          author: detail.user?.login ?? "",
-          state: detail.state,
-          draft: detail.draft,
-          mergeable: detail.mergeable,
-          mergeable_state: detail.mergeable_state,
-          head: detail.head.ref,
-          base: detail.base.ref,
-          updated_at: detail.updated_at,
-          comments: detail.comments,
-          review_comments: detail.review_comments,
-          commits: detail.commits,
-          additions: detail.additions,
-          deletions: detail.deletions,
-          changed_files: detail.changed_files,
-          readiness,
-          checks: { total: checks.total, failing: checks.failing, pending: checks.pending },
-          reviews,
-        };
-      }),
+      pulls.map((p) => enrichPull(owner, repo, p.number)),
     );
 
     return NextResponse.json({

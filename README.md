@@ -1,27 +1,60 @@
-# GitHub PR Insights
+# giTrack
 
-Next.js app for **engineering org visibility** into pull requests: **merge readiness score**, **checks**, **ACK-style review summary**, **comment counts**, and **on-demand LLM reviews/insights**. Stats load when you open a repo slice; LLM reviews run only when a user clicks the review action.
+Next.js app for **engineering org visibility** into pull requests: **merge readiness scoring**, **CI checks + commit statuses**, **review summaries**, **PR size labels**, and **AI-powered review assistance** — including an "At a glance" code-focused summary and a structured Review Guide.
+
+## Features
+
+- **Readiness score** — 0–100 score with per-criteria breakdown (draft, merge conflicts, review status, CI checks, approvals)
+- **PR size labels** — XS / S / M / L / XL / XXL based on lines changed
+- **Mergeable indicators** — keyword tags (Clean, Conflict, Draft, CI failing, Changes requested, etc.)
+- **At a glance** — AI-generated panel highlighting the key code changes with file paths, line numbers, and diff snippets
+- **Review Guide** — AI-generated checklist, risk hotspots, and testing suggestions with color-coded sections
+- **Full AI Review** — on-demand detailed PR review via the configured LLM
+- **Cross-repo search** — search by PR number or title text across all pages (uses GitHub Search API)
+- **Light / Dark mode** — toggle between themes; persists preference
+- **AI Mode** — toggle AI features on/off from the header
+
+## Supported LLM providers
+
+| Provider | Key required | Notes |
+|----------|-------------|-------|
+| **Anthropic** | `ANTHROPIC_API_KEY` | Default model: `claude-3-5-sonnet-20241022` |
+| **Groq** | `GROQ_API_KEY` | Default model: `llama3-70b-8192` |
+| **Ollama** | None (local) | Default model: `llama3`, runs at `http://localhost:11434` |
 
 ## Local first run
 
-1. Install **Node.js LTS** from [https://nodejs.org](https://nodejs.org) so you have `npm` on your PATH (the Cursor-bundled `node.exe` alone is not enough).
+1. Install **Node.js LTS** from [https://nodejs.org](https://nodejs.org).
 
 2. Copy environment variables:
 
    ```bash
-   copy .env.example .env.local
+   cp .env.example .env.local
    ```
-
-   On macOS or Linux, use `cp .env.example .env.local` instead.
 
 3. Fill in `.env.local`:
 
-   - **`GITHUB_TOKEN`**: classic PAT or fine-grained token with read access to the repos you care about (`repo` for private repos, `read:org` if you need org metadata elsewhere later).
-   - **`ANTHROPIC_API_KEY`**: server-side Anthropic key used only by API routes (never sent to the browser).
-   - Optional **`ANTHROPIC_MODEL`**: defaults to `claude-3-5-sonnet-20241022` in code; set this if your org standardizes on another Claude snapshot.
-   - Optional **`GROQ_API_KEY`**: server-side Groq key used only by API routes.
-   - Optional **`GROQ_MODEL`**: defaults to `llama3-70b-8192`.
-   - Optional **`LLM_PROVIDER`**: `anthropic`, `groq`, or unset for auto-detect (Groq if configured, otherwise Anthropic).
+   | Variable | Required | Description |
+   |----------|----------|-------------|
+   | `GITHUB_TOKEN` | Yes | Classic PAT or fine-grained token with repo read access |
+   | `LLM_PROVIDER` | No | `anthropic`, `groq`, `ollama`, or unset for auto-detect |
+   | `ANTHROPIC_API_KEY` | If using Anthropic | Server-side only |
+   | `ANTHROPIC_MODEL` | No | Override the default Claude model |
+   | `GROQ_API_KEY` | If using Groq | Server-side only |
+   | `GROQ_MODEL` | No | Override the default Groq model |
+   | `OLLAMA_HOST` | No | Ollama base URL (default: `http://localhost:11434`) |
+   | `OLLAMA_MODEL` | No | Override the default Ollama model |
+
+   **Using Ollama (no API key needed):**
+
+   ```bash
+   # Make sure Ollama is running with a model pulled
+   ollama serve
+   ollama pull llama3
+
+   # Then set in .env.local:
+   LLM_PROVIDER=ollama
+   ```
 
 4. Install and start:
 
@@ -30,35 +63,37 @@ Next.js app for **engineering org visibility** into pull requests: **merge readi
    npm run dev
    ```
 
-5. Open [http://localhost:3000](http://localhost:3000), enter **owner** and **repo**, then **Load PRs**. Use **Next / Prev** for pagination. **AI review** fetches the diff and calls the configured LLM once per click.
+5. Open [http://localhost:3000](http://localhost:3000), enter **Owner** and **Repo**, then click **Load PRs**.
 
-## How this maps to “org rollout”
+## Usage
 
-### GitHub access models
-
-| Approach | Best for | Notes |
-|----------|-----------|--------|
-| **Shared PAT in server env** (this v1) | Solo / internal pilot on your laptop or a single shared demo host | Easiest; token is powerful—treat `.env.local` / deployment secrets like production credentials. |
-| **Per-user OAuth (GitHub App or OAuth App)** | Real multi-user product | Each user signs in; the server stores **per-user access tokens** (encrypted) and calls GitHub as that user. Fits “anyone sees repos they can access.” |
-| **GitHub App (installation token)** | Org-wide automation without a human PAT | Install the app on `your-org`; backend exchanges JWT for **installation tokens** scoped to repos you select. Great for scheduled sync jobs and uniform access. |
-
-For **reviews**, nothing about GitHub App vs OAuth changes the LLM side: the server still needs the configured **LLM provider credential** (Anthropic or Groq; set via env).
-
-### LLM providers
-
-- **Org standard (recommended for production)**: one LLM API key in your deployment platform (Anthropic or Groq). All reviews share org quota; you audit centrally.
-- **Per-engineer keys**: possible but usually worse operationally (key rotation, leakage from laptops, no central audit). If you need it, add an encrypted-at-rest column and a settings UI—out of scope for this first version.
-
-### Suggested production hardening (later)
-
-- Replace shared `GITHUB_TOKEN` with **session + OAuth** or **GitHub App**.
-- Add org SSO in front of the app (Okta, Google Workspace, etc.) if it is internal-only.
-- Rate-limit `/api/review`, cap diff size (already truncated server-side), and log PR numbers without storing full diffs.
+- **Load PRs** — fetches the paginated PR list with readiness scores, checks, and review status
+- **Expand a row** (click ▸) — shows the AI "At a glance" and "Review Guide" panels (auto-generated when AI mode is on)
+- **AI Review button** — runs a full LLM-powered PR review in a modal
+- **Search** — type a PR number to jump to it, or text to search titles across the entire repo
+- **Priority view / Sort** — filter by review-ready, blocked, draft, etc. and sort by readiness or update time
+- **Light/Dark toggle** — sun/moon button in the top-right corner
+- **AI Mode toggle** — enables/disables all AI features
 
 ## API routes
 
-- `GET /api/prs?owner=&repo=&page=&perPage=&state=open|closed|all` — hydrated PR rows with readiness and checks.
-- `POST /api/review` with JSON `{ "owner", "repo", "number" }` — returns `{ markdown, model }` from the configured LLM provider.
+| Method | Route | Description |
+|--------|-------|-------------|
+| `GET` | `/api/prs` | Paginated PR list with readiness, checks, reviews. Supports `search` param for cross-page search. |
+| `POST` | `/api/review` | Full LLM PR review. Body: `{ owner, repo, number }` |
+| `POST` | `/api/insights` | Review Guide generation. Body: `{ owner, repo, number }` |
+| `POST` | `/api/glance` | At-a-glance code summary. Body: `{ owner, repo, number }` |
+
+## How checks work
+
+giTrack combines two GitHub status systems to match what you see on a PR page:
+
+- **Check Runs** — from GitHub Actions / Apps (fetched from the base repo, not forks)
+- **Commit Statuses** — from external CI integrations (GitBook, Jenkins, etc.)
+
+Checks are deduplicated by name (re-runs keep only the latest), and skipped/neutral/cancelled runs are excluded from counts.
+
+
 
 ## License
 

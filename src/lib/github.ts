@@ -61,6 +61,23 @@ export async function listPullRequests(
   return { pulls: data, link };
 }
 
+export async function searchPullRequests(
+  owner: string,
+  repo: string,
+  query: string,
+  state: "open" | "closed" | "all",
+) {
+  const stateFilter = state === "all" ? "" : `+is:${state}`;
+  const q = encodeURIComponent(`repo:${owner}/${repo} is:pr${stateFilter} ${query}`);
+  const res = await githubFetch(`/search/issues?q=${q}&per_page=20&sort=updated&order=desc`);
+  const json = (await res.json()) as {
+    items: Array<{ number: number; pull_request?: { url: string } }>;
+  };
+  return (json.items ?? [])
+    .filter((i) => i.pull_request)
+    .map((i) => i.number);
+}
+
 export function parseLinkHeader(link: string): { next?: number; last?: number } {
   const out: { next?: number; last?: number } = {};
   if (!link) return out;

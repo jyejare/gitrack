@@ -386,7 +386,7 @@ export function Dashboard() {
   }, [aiMode]);
 
   const fetchPrs = useCallback(
-    async (targetPage: number) => {
+    async (targetPage: number, searchQuery?: string) => {
       if (!canLoad) return;
       setLoading(true);
       setError(null);
@@ -398,13 +398,14 @@ export function Dashboard() {
           perPage: String(perPage),
           state,
         });
+        if (searchQuery) q.set("search", searchQuery);
         const res = await fetch(`/api/prs?${q.toString()}`);
         const json = (await res.json()) as PrsResponse & { error?: string };
         if (!res.ok) {
           throw new Error(json.error ?? `Request failed (${res.status})`);
         }
         setData(json);
-        setPage(targetPage);
+        if (!searchQuery) setPage(targetPage);
       } catch (e) {
         setData(null);
         setError(e instanceof Error ? e.message : "Failed to load PRs");
@@ -414,6 +415,13 @@ export function Dashboard() {
     },
     [canLoad, owner, repo, perPage, state],
   );
+
+  useEffect(() => {
+    const q = search.trim();
+    if (!q || !canLoad) return;
+    const timer = setTimeout(() => void fetchPrs(1, q), 400);
+    return () => clearTimeout(timer);
+  }, [search, canLoad, fetchPrs]);
 
   const runReview = async (number: number) => {
     if (!canLoad || !aiMode) return;
@@ -551,17 +559,6 @@ export function Dashboard() {
     const all = data?.pulls ?? [];
     let out = [...all];
 
-    const q = search.trim().toLowerCase();
-    if (q) {
-      const num = Number(q);
-      out = out.filter(
-        (p) =>
-          (Number.isFinite(num) && p.number === num) ||
-          p.title.toLowerCase().includes(q) ||
-          String(p.number).includes(q),
-      );
-    }
-
     if (priorityView !== "all") {
       out = out.filter((p) => {
         if (priorityView === "reviewReady") return isReviewReady(p);
@@ -597,7 +594,7 @@ export function Dashboard() {
     // oldestUpdated
     out.sort((a, b) => Date.parse(a.updated_at) - Date.parse(b.updated_at));
     return out;
-  }, [data, prioritySort, priorityView, search]);
+  }, [data, prioritySort, priorityView]);
 
   const paginationLabel = useMemo(() => {
     if (!data) return "";
@@ -664,7 +661,7 @@ export function Dashboard() {
             type="button"
             className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
             disabled={!canLoad || loading}
-            onClick={() => void fetchPrs(1)}
+            onClick={() => { setSearch(""); void fetchPrs(1); }}
           >
             Load PRs
           </button>
@@ -729,11 +726,21 @@ export function Dashboard() {
                     <line x1="21" y1="21" x2="16.65" y2="16.65" />
                   </svg>
                   <input
-                    className="rounded-md border border-slate-300 bg-white py-2 pl-9 pr-3 text-sm outline-none ring-emerald-500/40 focus:ring-2 dark:border-slate-700 dark:bg-slate-950"
+                    className="rounded-md border border-slate-300 bg-white py-2 pl-9 pr-8 text-sm outline-none ring-emerald-500/40 focus:ring-2 dark:border-slate-700 dark:bg-slate-950"
                     placeholder="PR # or title…"
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
                   />
+                  {search ? (
+                    <button
+                      type="button"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                      onClick={() => { setSearch(""); void fetchPrs(page); }}
+                      aria-label="Clear search"
+                    >
+                      ×
+                    </button>
+                  ) : null}
                 </div>
               </label>
 

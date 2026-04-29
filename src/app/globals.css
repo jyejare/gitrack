@@ -8,7 +8,11 @@
 }
 
 body {
-  @apply min-h-screen bg-slate-50 text-slate-900 antialiased;
+  min-height: 100vh;
+  background-color: #f8fafc;
+  color: #0f172a;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 body.ai-mode {
@@ -17,13 +21,87 @@ body.ai-mode {
     radial-gradient(900px circle at 100% 20%, rgba(45, 212, 191, 0.06), transparent 55%);
 }
 
+/*
+ * The UI was built dark-first. Rather than adding dark: prefixes to every
+ * utility, remap the pastel/light Tailwind text & background colors to their
+ * darker counterparts in light mode so content stays readable on white.
+ */
+
+/* ── Slate text ───────────────────────────────── */
+html:not(.dark) .text-slate-100 { color: #0f172a; }
+html:not(.dark) .text-slate-200 { color: #1e293b; }
+html:not(.dark) .text-slate-300 { color: #334155; }
+html:not(.dark) .text-slate-400 { color: #475569; }
+
+/* ── Accent text (pastel → vivid) ─────────────── */
+html:not(.dark) .text-emerald-300,
+html:not(.dark) .text-emerald-400 { color: #059669; }
+html:not(.dark) .text-rose-300,
+html:not(.dark) .text-rose-400 { color: #e11d48; }
+html:not(.dark) .text-amber-200,
+html:not(.dark) .text-amber-300 { color: #d97706; }
+html:not(.dark) .text-cyan-300 { color: #0891b2; }
+html:not(.dark) .text-sky-300 { color: #0284c7; }
+html:not(.dark) .text-violet-300 { color: #7c3aed; }
+html:not(.dark) .text-teal-300 { color: #0d9488; }
+html:not(.dark) .text-orange-200 { color: #c2410c; }
+
+/* ── Borders ──────────────────────────────────── */
+html:not(.dark) .border-slate-700,
+html:not(.dark) .border-slate-800 { border-color: #e2e8f0; }
+html:not(.dark) .border-slate-600 { border-color: #cbd5e1; }
+html:not(.dark) .border-emerald-900\/60,
+html:not(.dark) .border-emerald-700 { border-color: #a7f3d0; }
+html:not(.dark) .border-amber-900\/60,
+html:not(.dark) .border-amber-700 { border-color: #fde68a; }
+html:not(.dark) .border-rose-900\/60,
+html:not(.dark) .border-rose-700 { border-color: #fecdd3; }
+html:not(.dark) .border-sky-800\/50,
+html:not(.dark) .border-sky-700 { border-color: #bae6fd; }
+html:not(.dark) .border-amber-800\/50 { border-color: #fde68a; }
+html:not(.dark) .border-violet-800\/50,
+html:not(.dark) .border-violet-700 { border-color: #ddd6fe; }
+html:not(.dark) .border-teal-800\/50,
+html:not(.dark) .border-teal-700 { border-color: #99f6e4; }
+html:not(.dark) .border-orange-700 { border-color: #fed7aa; }
+html:not(.dark) .border-slate-700\/60,
+html:not(.dark) .border-slate-700\/40,
+html:not(.dark) .border-slate-700\/50 { border-color: #e2e8f0; }
+
+/* ── Backgrounds ──────────────────────────────── */
+html:not(.dark) .bg-slate-900\/40,
+html:not(.dark) .bg-slate-900\/50,
+html:not(.dark) .bg-slate-900\/60 { background-color: rgb(248 250 252 / 0.7); }
+html:not(.dark) .bg-slate-950\/40,
+html:not(.dark) .bg-slate-950\/30 { background-color: rgb(255 255 255 / 0.6); }
+html:not(.dark) .bg-slate-950 { background-color: #f8fafc; }
+html:not(.dark) .bg-slate-800 { background-color: #e2e8f0; }
+html:not(.dark) .bg-slate-900 { background-color: #f1f5f9; }
+html:not(.dark) .bg-emerald-950\/40 { background-color: rgb(209 250 229 / 0.4); }
+html:not(.dark) .bg-amber-950\/40,
+html:not(.dark) .bg-amber-950\/70 { background-color: rgb(254 243 199 / 0.4); }
+html:not(.dark) .bg-rose-950\/40,
+html:not(.dark) .bg-rose-950\/50 { background-color: rgb(255 228 230 / 0.4); }
+html:not(.dark) .bg-sky-950\/25 { background-color: rgb(224 242 254 / 0.5); }
+html:not(.dark) .bg-amber-950\/25 { background-color: rgb(254 243 199 / 0.4); }
+html:not(.dark) .bg-violet-950\/25 { background-color: rgb(237 233 254 / 0.5); }
+html:not(.dark) .bg-teal-950\/25 { background-color: rgb(204 251 241 / 0.4); }
+html:not(.dark) .bg-orange-950\/50 { background-color: rgb(255 237 213 / 0.4); }
+
+/* ── Review modal hover ──────────────────────── */
+html:not(.dark) .hover\:bg-slate-900:hover { background-color: #f1f5f9; }
+
+/* ── Inline code ──────────────────────────────── */
+html:not(.dark) code.text-cyan-300 { color: #0e7490; background-color: #ecfeff; }
+
 /* ── Dark mode ────────────────────────────────────────────────────── */
 .dark {
   color-scheme: dark;
 }
 
 .dark body {
-  @apply bg-slate-950 text-slate-100;
+  background-color: #020617;
+  color: #f1f5f9;
 }
 
 .dark body.ai-mode {
