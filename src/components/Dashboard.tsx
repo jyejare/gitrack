@@ -2,6 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useAiMode } from "@/components/AiModeContext";
+import { useAdvancedUi } from "@/components/AdvancedUiContext";
 
 type ReviewItem = {
   id: number;
@@ -20,7 +21,9 @@ type PullRow = {
   mergeable_state?: string;
   head: string;
   base: string;
+  created_at: string;
   updated_at: string;
+  last_activity_at: string | null;
   comments: number;
   review_comments: number;
   commits: number;
@@ -92,83 +95,476 @@ function reviewReadyReason(p: PullRow) {
 }
 
 function scoreTone(score: number) {
-  if (score >= 80) return "text-emerald-300";
-  if (score >= 55) return "text-amber-300";
-  return "text-rose-300";
+  if (score >= 80) return "text-emerald-700 dark:text-emerald-300";
+  if (score >= 55) return "text-amber-700 dark:text-amber-300";
+  return "text-rose-700 dark:text-rose-300";
 }
 
-/* ── Glance renderer ─────────────────────────────────────────────────── */
-
-type GlanceItem = { filePath: string; lineRange: string; explanation: string; code: string[] };
-
-function parseGlance(md: string): GlanceItem[] {
-  const raw = md.split(/^###\s+/m).filter((s) => s.trim());
-  return raw.map((section) => {
-    const lines = section.split("\n");
-    const header = lines[0] ?? "";
-    const pathMatch = header.match(/`([^`]+)`/);
-    const filePath = pathMatch?.[1] ?? header.trim();
-    const lineRange = header.replace(/`[^`]+`/, "").replace(/^\s*/, "").trim();
-
-    const codeStart = lines.findIndex((l) => /^```/.test(l));
-    let codeEnd = -1;
-    if (codeStart >= 0) {
-      codeEnd = lines.findIndex((l, j) => j > codeStart && /^```/.test(l));
-      if (codeEnd < 0) codeEnd = lines.length;
-    }
-
-    const explanation =
-      codeStart > 0
-        ? lines.slice(1, codeStart).join("\n").trim()
-        : lines.slice(1).join("\n").trim();
-
-    const code = codeStart >= 0 ? lines.slice(codeStart + 1, codeEnd) : [];
-    return { filePath, lineRange, explanation, code };
-  });
+function prStatusBadge(p: PullRow): { label: string; cls: string } {
+  if (p.draft)
+    return { label: "Draft", cls: "border-slate-300 bg-slate-50 text-slate-700 dark:border-slate-600 dark:bg-slate-900/50 dark:text-slate-300" };
+  if (isConflicted(p))
+    return { label: "Conflict", cls: "border-rose-300 bg-rose-50 text-rose-800 dark:border-rose-700 dark:bg-rose-950/40 dark:text-rose-200" };
+  if (p.checks.failing > 0)
+    return { label: "CI Failing", cls: "border-rose-300 bg-rose-50 text-rose-800 dark:border-rose-700 dark:bg-rose-950/40 dark:text-rose-200" };
+  if (p.readiness.breakdown.changesRequested > 0)
+    return { label: "Changes Requested", cls: "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200" };
+  if (isReviewReady(p))
+    return { label: "Ready", cls: "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200" };
+  return { label: "Not Ready", cls: "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200" };
 }
 
-function GlanceView({ markdown }: { markdown: string }) {
-  const items = parseGlance(markdown);
-  if (items.length === 0) {
-    return <p className="text-xs text-slate-400">No changes extracted.</p>;
-  }
+/* ── Walkthrough types (from glance API) ─────────────────────────────── */
+
+type WalkthroughEntry = { file: string; change: string; summary: string; code?: string };
+
+type GlanceData = {
+  loading: boolean;
+  summary?: string;
+  walkthrough?: WalkthroughEntry[];
+  markdown?: string;
+  error?: string;
+};
+
+/* ── Review types (from review API) ──────────────────────────────────── */
+
+type ReviewCommentData = {
+  file: string;
+  line?: string;
+  severity: string;
+  title: string;
+  body: string;
+  existing_code?: string;
+  suggested_code?: string;
+};
+
+type ReviewData = {
+  summary?: string;
+  verdict?: string;
+  comments?: ReviewCommentData[];
+  markdown?: string;
+  model?: string;
+};
+
+/* ── Change type badge ───────────────────────────────────────────────── */
+
+const CHANGE_BADGE: Record<string, string> = {
+  Added: "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200",
+  Removed: "border-rose-300 bg-rose-50 text-rose-800 dark:border-rose-700 dark:bg-rose-950/40 dark:text-rose-200",
+  Renamed: "border-violet-300 bg-violet-50 text-violet-800 dark:border-violet-700 dark:bg-violet-950/40 dark:text-violet-200",
+  Modified: "border-sky-300 bg-sky-50 text-sky-800 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-200",
+};
+
+/* ── Severity badge ──────────────────────────────────────────────────── */
+
+const SEVERITY_CONFIG: Record<string, { label: string; cls: string; icon: string }> = {
+  critical: {
+    label: "Critical",
+    cls: "border-rose-300 bg-rose-50 text-rose-800 dark:border-rose-700 dark:bg-rose-950/40 dark:text-rose-200",
+    icon: "!!!",
+  },
+  warning: {
+    label: "Warning",
+    cls: "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200",
+    icon: "!!",
+  },
+  suggestion: {
+    label: "Suggestion",
+    cls: "border-sky-300 bg-sky-50 text-sky-800 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-200",
+    icon: "!",
+  },
+  nitpick: {
+    label: "Nitpick",
+    cls: "border-slate-300 bg-slate-50 text-slate-700 dark:border-slate-600 dark:bg-slate-900/50 dark:text-slate-300",
+    icon: "~",
+  },
+  praise: {
+    label: "Praise",
+    cls: "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200",
+    icon: "+",
+  },
+};
+
+const VERDICT_CONFIG: Record<string, { label: string; cls: string }> = {
+  approve: {
+    label: "Approve",
+    cls: "border-emerald-400 bg-emerald-50 text-emerald-800 dark:border-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-200",
+  },
+  "request-changes": {
+    label: "Changes Requested",
+    cls: "border-rose-400 bg-rose-50 text-rose-800 dark:border-rose-600 dark:bg-rose-950/40 dark:text-rose-200",
+  },
+  comment: {
+    label: "Comment",
+    cls: "border-sky-400 bg-sky-50 text-sky-800 dark:border-sky-600 dark:bg-sky-950/40 dark:text-sky-200",
+  },
+};
+
+/* ── Code lines renderer (shared) ────────────────────────────────────── */
+
+function DiffLines({ code }: { code: string }) {
+  const lines = code.split("\n");
+  return (
+    <pre className="mt-2 overflow-x-auto rounded-md border border-slate-700/50 bg-slate-950 p-2 text-[11px] leading-relaxed">
+      {lines.map((line, j) => (
+        <div
+          key={j}
+          className={
+            line.startsWith("+")
+              ? "text-emerald-400"
+              : line.startsWith("-")
+                ? "text-rose-400"
+                : "text-slate-400"
+          }
+        >
+          {line}
+        </div>
+      ))}
+    </pre>
+  );
+}
+
+/* ── At a Glance View (numbered cards with code) ─────────────────────── */
+
+function GlanceView({ summary, walkthrough }: { summary: string; walkthrough: WalkthroughEntry[] }) {
   return (
     <div className="mt-2 flex flex-col gap-3">
-      {items.map((item, i) => (
+      {summary ? (
+        <div className="rounded-lg border border-slate-200 bg-white/60 p-3 dark:border-slate-700/50 dark:bg-slate-900/40">
+          <p className="text-xs leading-relaxed text-slate-700 dark:text-slate-300">{summary}</p>
+        </div>
+      ) : null}
+
+      {walkthrough.map((entry, i) => (
         <div key={i} className="rounded-lg border border-slate-700/60 bg-slate-900/50 p-2.5">
           <div className="flex items-baseline gap-2">
             <span className="flex-none rounded-full bg-emerald-600 px-2 py-0.5 text-[11px] font-bold text-white">
               {i + 1}
             </span>
-            <code className="text-xs font-semibold text-cyan-300">{item.filePath}</code>
-            {item.lineRange ? (
-              <span className="text-[11px] text-slate-500">{item.lineRange}</span>
-            ) : null}
+            <code className="text-xs font-semibold text-cyan-300">{entry.file}</code>
+            <span className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${CHANGE_BADGE[entry.change] ?? CHANGE_BADGE.Modified}`}>
+              {entry.change}
+            </span>
           </div>
-          {item.explanation ? (
-            <p className="mt-1.5 text-xs leading-relaxed text-slate-300">{item.explanation}</p>
-          ) : null}
-          {item.code.length > 0 ? (
-            <pre className="mt-2 overflow-x-auto rounded-md border border-slate-700/50 bg-slate-950 p-2 text-[11px] leading-relaxed">
-              {item.code.map((line, j) => (
-                <div
-                  key={j}
-                  className={
-                    line.startsWith("+")
-                      ? "text-emerald-400"
-                      : line.startsWith("-")
-                        ? "text-rose-400"
-                        : "text-slate-400"
-                  }
-                >
-                  {line}
-                </div>
-              ))}
-            </pre>
-          ) : null}
+          <p className="mt-1.5 text-xs leading-relaxed text-slate-300">{entry.summary}</p>
+          {entry.code ? <DiffLines code={entry.code} /> : null}
         </div>
       ))}
     </div>
+  );
+}
+
+/* ── Markdown fallback for glance ────────────────────────────────────── */
+
+function GlanceFallback({ markdown }: { markdown: string }) {
+  return (
+    <article className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-slate-200">
+      {markdown}
+    </article>
+  );
+}
+
+/* ── Structured Review View (editable, CodeRabbit-style) ─────────────── */
+
+const SEVERITY_OPTIONS: { value: string; label: string }[] = [
+  { value: "critical", label: "Critical" },
+  { value: "warning", label: "Warning" },
+  { value: "suggestion", label: "Suggestion" },
+  { value: "nitpick", label: "Nitpick" },
+  { value: "praise", label: "Praise" },
+];
+
+const VERDICT_OPTIONS: { value: string; label: string }[] = [
+  { value: "approve", label: "Approve" },
+  { value: "request-changes", label: "Changes Requested" },
+  { value: "comment", label: "Comment" },
+];
+
+function ReviewCommentsView({
+  summary,
+  verdict,
+  comments,
+  onUpdateSummary,
+  onUpdateVerdict,
+  onUpdateComment,
+  onDeleteComment,
+  onAddComment,
+}: {
+  summary: string;
+  verdict: string;
+  comments: ReviewCommentData[];
+  onUpdateSummary: (s: string) => void;
+  onUpdateVerdict: (v: string) => void;
+  onUpdateComment: (index: number, c: ReviewCommentData) => void;
+  onDeleteComment: (index: number) => void;
+  onAddComment: (c: ReviewCommentData) => void;
+}) {
+  const [collapsedFiles, setCollapsedFiles] = useState<Set<string>>(new Set());
+  const [editingIdx, setEditingIdx] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState<ReviewCommentData | null>(null);
+  const [editingSummary, setEditingSummary] = useState(false);
+  const [summaryDraft, setSummaryDraft] = useState("");
+  const [addingComment, setAddingComment] = useState(false);
+  const [addDraft, setAddDraft] = useState<ReviewCommentData>({
+    file: "", severity: "suggestion", title: "", body: "",
+  });
+
+  const toggleFileGroup = (file: string) => {
+    setCollapsedFiles((prev) => {
+      const next = new Set(prev);
+      if (next.has(file)) next.delete(file);
+      else next.add(file);
+      return next;
+    });
+  };
+
+  const globalIdx = (file: string, localIdx: number): number => {
+    let count = 0;
+    for (const c of comments) {
+      if (c.file === file) {
+        if (count === localIdx) return comments.indexOf(c);
+        count++;
+      }
+    }
+    return -1;
+  };
+
+  const fileGroups = useMemo(() => {
+    const groups = new Map<string, ReviewCommentData[]>();
+    for (const c of comments) {
+      const existing = groups.get(c.file) ?? [];
+      existing.push(c);
+      groups.set(c.file, existing);
+    }
+    return Array.from(groups.entries());
+  }, [comments]);
+
+  const severityCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const c of comments) {
+      counts[c.severity] = (counts[c.severity] ?? 0) + 1;
+    }
+    return counts;
+  }, [comments]);
+
+  const vCfg = VERDICT_CONFIG[verdict] ?? VERDICT_CONFIG.comment;
+
+  const inputCls = "w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-xs outline-none ring-emerald-500/40 focus:ring-2 dark:border-slate-700 dark:bg-slate-950";
+  const textareaCls = `${inputCls} resize-y`;
+  const btnSmCls = "rounded px-2 py-0.5 text-[11px] font-medium";
+
+  return (
+    <div className="flex flex-col gap-4">
+      {/* Summary + verdict header */}
+      <div className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-white/60 p-4 dark:border-slate-800 dark:bg-slate-950/40">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Summary</h3>
+          <div className="flex items-center gap-2">
+            <select
+              className="rounded-md border border-slate-300 bg-white px-2 py-0.5 text-xs outline-none ring-emerald-500/40 focus:ring-2 dark:border-slate-700 dark:bg-slate-950"
+              value={verdict}
+              onChange={(e) => onUpdateVerdict(e.target.value)}
+            >
+              {VERDICT_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+        {editingSummary ? (
+          <div className="flex flex-col gap-2">
+            <textarea className={textareaCls} rows={3} value={summaryDraft} onChange={(e) => setSummaryDraft(e.target.value)} />
+            <div className="flex gap-2">
+              <button type="button" className={`${btnSmCls} bg-emerald-600 text-white hover:bg-emerald-500`} onClick={() => { onUpdateSummary(summaryDraft); setEditingSummary(false); }}>Save</button>
+              <button type="button" className={`${btnSmCls} border border-slate-300 hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-900`} onClick={() => setEditingSummary(false)}>Cancel</button>
+            </div>
+          </div>
+        ) : (
+          <div className="group relative">
+            <p className="text-sm leading-relaxed text-slate-700 dark:text-slate-300">{summary}</p>
+            <button
+              type="button"
+              className="mt-1 text-[11px] text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400"
+              onClick={() => { setSummaryDraft(summary); setEditingSummary(true); }}
+            >
+              Edit summary
+            </button>
+          </div>
+        )}
+        <div className="flex flex-wrap gap-2 border-t border-slate-200 pt-3 dark:border-slate-700/50">
+          {Object.entries(severityCounts).map(([sev, count]) => {
+            const cfg = SEVERITY_CONFIG[sev] ?? SEVERITY_CONFIG.suggestion;
+            return (
+              <span key={sev} className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium ${cfg.cls}`}>
+                {cfg.label}: {count}
+              </span>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* File-grouped comments */}
+      {fileGroups.map(([file, fileComments]) => {
+        const isCollapsed = collapsedFiles.has(file);
+        return (
+          <div key={file} className="overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700/50">
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 bg-slate-100/80 px-3 py-2 text-left hover:bg-slate-200/60 dark:bg-slate-900/60 dark:hover:bg-slate-800/60"
+              onClick={() => toggleFileGroup(file)}
+            >
+              <span
+                className="inline-block text-[10px] text-slate-400 transition-transform"
+                style={{ transform: isCollapsed ? "rotate(0deg)" : "rotate(90deg)" }}
+              >
+                ▶
+              </span>
+              <code className="text-xs font-semibold text-slate-800 dark:text-slate-200">{file}</code>
+              <span className="text-[11px] text-slate-500">({fileComments.length})</span>
+            </button>
+            {!isCollapsed ? (
+              <div className="divide-y divide-slate-100 bg-white/60 dark:divide-slate-800 dark:bg-slate-950/40">
+                {fileComments.map((c, ci) => {
+                  const gIdx = globalIdx(file, ci);
+                  const isEditing = editingIdx === gIdx;
+                  const sCfg = SEVERITY_CONFIG[c.severity] ?? SEVERITY_CONFIG.suggestion;
+
+                  if (isEditing && editDraft) {
+                    return (
+                      <div key={ci} className="flex flex-col gap-2 bg-slate-50 px-3 py-3 dark:bg-slate-900/30">
+                        <div className="grid grid-cols-3 gap-2">
+                          <select className={inputCls} value={editDraft.severity} onChange={(e) => setEditDraft({ ...editDraft, severity: e.target.value })}>
+                            {SEVERITY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                          </select>
+                          <input className={`${inputCls} col-span-2`} placeholder="Title" value={editDraft.title} onChange={(e) => setEditDraft({ ...editDraft, title: e.target.value })} />
+                        </div>
+                        <textarea className={textareaCls} rows={3} placeholder="Comment body" value={editDraft.body} onChange={(e) => setEditDraft({ ...editDraft, body: e.target.value })} />
+                        <div className="grid grid-cols-2 gap-2">
+                          <textarea className={textareaCls} rows={2} placeholder="Existing code (optional)" value={editDraft.existing_code ?? ""} onChange={(e) => setEditDraft({ ...editDraft, existing_code: e.target.value || undefined })} />
+                          <textarea className={textareaCls} rows={2} placeholder="Suggested code (optional)" value={editDraft.suggested_code ?? ""} onChange={(e) => setEditDraft({ ...editDraft, suggested_code: e.target.value || undefined })} />
+                        </div>
+                        <div className="flex gap-2">
+                          <button type="button" className={`${btnSmCls} bg-emerald-600 text-white hover:bg-emerald-500`} onClick={() => { onUpdateComment(gIdx, editDraft); setEditingIdx(null); setEditDraft(null); }}>Save</button>
+                          <button type="button" className={`${btnSmCls} border border-slate-300 hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-900`} onClick={() => { setEditingIdx(null); setEditDraft(null); }}>Cancel</button>
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div key={ci} className="px-3 py-3">
+                      <div className="flex items-start gap-2">
+                        <span className={`mt-0.5 inline-flex flex-none items-center rounded-full border px-1.5 py-0.5 text-[10px] font-semibold ${sCfg.cls}`}>
+                          {sCfg.label}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-baseline justify-between gap-2">
+                            <div className="flex items-baseline gap-2">
+                              <span className="text-sm font-medium text-slate-900 dark:text-slate-100">{c.title}</span>
+                              {c.line ? <span className="text-[11px] text-slate-500">L{c.line}</span> : null}
+                            </div>
+                            <div className="flex flex-none items-center gap-1">
+                              <button
+                                type="button"
+                                className="text-[11px] text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400"
+                                onClick={() => { setEditingIdx(gIdx); setEditDraft({ ...c }); }}
+                              >
+                                Edit
+                              </button>
+                              <span className="text-slate-300 dark:text-slate-700">|</span>
+                              <button
+                                type="button"
+                                className="text-[11px] text-slate-400 hover:text-rose-600 dark:hover:text-rose-400"
+                                onClick={() => onDeleteComment(gIdx)}
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          </div>
+                          <p className="mt-1 text-xs leading-relaxed text-slate-600 dark:text-slate-300">{c.body}</p>
+                          {c.existing_code ? (
+                            <div className="mt-2">
+                              <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Current code</div>
+                              <DiffLines code={c.existing_code} />
+                            </div>
+                          ) : null}
+                          {c.suggested_code ? (
+                            <div className="mt-2">
+                              <div className="text-[10px] font-medium uppercase tracking-wide text-emerald-600 dark:text-emerald-400">Suggested replacement</div>
+                              <pre className="mt-1 overflow-x-auto rounded-md border border-emerald-700/40 bg-emerald-950/30 p-2 text-[11px] leading-relaxed">
+                                <code className="text-emerald-300">{c.suggested_code}</code>
+                              </pre>
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+
+      {/* Add comment form */}
+      {addingComment ? (
+        <div className="flex flex-col gap-2 rounded-lg border border-dashed border-emerald-400 bg-emerald-50/30 p-3 dark:border-emerald-700 dark:bg-emerald-950/20">
+          <div className="text-xs font-semibold text-emerald-700 dark:text-emerald-300">Add comment</div>
+          <div className="grid grid-cols-4 gap-2">
+            <input className={inputCls} placeholder="File path" value={addDraft.file} onChange={(e) => setAddDraft({ ...addDraft, file: e.target.value })} />
+            <select className={inputCls} value={addDraft.severity} onChange={(e) => setAddDraft({ ...addDraft, severity: e.target.value })}>
+              {SEVERITY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+            <input className={`${inputCls} col-span-2`} placeholder="Title" value={addDraft.title} onChange={(e) => setAddDraft({ ...addDraft, title: e.target.value })} />
+          </div>
+          <textarea className={textareaCls} rows={3} placeholder="Comment body" value={addDraft.body} onChange={(e) => setAddDraft({ ...addDraft, body: e.target.value })} />
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className={`${btnSmCls} bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40`}
+              disabled={!addDraft.file.trim() || !addDraft.title.trim() || !addDraft.body.trim()}
+              onClick={() => {
+                onAddComment(addDraft);
+                setAddDraft({ file: "", severity: "suggestion", title: "", body: "" });
+                setAddingComment(false);
+              }}
+            >
+              Add
+            </button>
+            <button type="button" className={`${btnSmCls} border border-slate-300 hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-900`} onClick={() => setAddingComment(false)}>Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="flex items-center gap-1 self-start rounded-md border border-dashed border-slate-400 px-3 py-1.5 text-xs font-medium text-slate-500 hover:border-emerald-500 hover:text-emerald-600 dark:border-slate-600 dark:text-slate-400 dark:hover:border-emerald-500 dark:hover:text-emerald-400"
+          onClick={() => setAddingComment(true)}
+        >
+          + Add comment
+        </button>
+      )}
+    </div>
+  );
+}
+
+/* ── Markdown fallback for review ────────────────────────────────────── */
+
+function ReviewFallback({ markdown }: { markdown: string }) {
+  return (
+    <article className="prose prose-sm max-w-none dark:prose-invert prose-headings:text-base prose-headings:font-semibold prose-code:rounded prose-code:bg-slate-100 prose-code:px-1 prose-code:py-0.5 prose-code:text-xs prose-code:before:content-none prose-code:after:content-none dark:prose-code:bg-slate-800 prose-pre:bg-slate-50 prose-pre:text-xs dark:prose-pre:bg-slate-900 prose-hr:my-3">
+      {markdown.split("\n").map((line, i) => {
+        if (line.startsWith("## "))
+          return <h2 key={i} className="mt-4 first:mt-0">{line.slice(3)}</h2>;
+        if (line.startsWith("### "))
+          return <h3 key={i} className="mt-3 text-sm font-semibold text-slate-900 dark:text-slate-100">{line.slice(4)}</h3>;
+        if (line === "---")
+          return <hr key={i} />;
+        if (line === "")
+          return <div key={i} className="h-2" />;
+        return <p key={i} className="my-0 text-slate-700 dark:text-slate-300">{line}</p>;
+      })}
+    </article>
   );
 }
 
@@ -305,18 +701,45 @@ function InsightsView({ markdown }: { markdown: string }) {
   );
 }
 
+/* ── Time-ago helper ────────────────────────────────────────────────── */
+
+function timeAgo(iso: string | null): { text: string; title: string } {
+  if (!iso) return { text: "—", title: "No activity" };
+  const ms = Date.now() - Date.parse(iso);
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return { text: "just now", title: new Date(iso).toLocaleString() };
+  const min = Math.floor(sec / 60);
+  if (min < 60) return { text: `${min}m ago`, title: new Date(iso).toLocaleString() };
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return { text: `${hr}h ago`, title: new Date(iso).toLocaleString() };
+  const days = Math.floor(hr / 24);
+  if (days < 30) return { text: `${days}d ago`, title: new Date(iso).toLocaleString() };
+  const months = Math.floor(days / 30);
+  if (months < 12) return { text: `${months}mo ago`, title: new Date(iso).toLocaleString() };
+  const years = Math.floor(months / 12);
+  return { text: `${years}y ago`, title: new Date(iso).toLocaleString() };
+}
+
+function ageBadgeColor(iso: string): string {
+  const days = (Date.now() - Date.parse(iso)) / (1000 * 60 * 60 * 24);
+  if (days > 30) return "text-rose-700 dark:text-rose-300";
+  if (days > 14) return "text-amber-700 dark:text-amber-300";
+  if (days > 7) return "text-yellow-700 dark:text-yellow-200";
+  return "text-emerald-700 dark:text-emerald-300";
+}
+
 /* ── PR size helper ──────────────────────────────────────────────────── */
 
 type PrSize = { label: string; color: string };
 
 function prSize(additions: number, deletions: number): PrSize {
   const total = additions + deletions;
-  if (total > 1000) return { label: "XXL", color: "border-rose-700 bg-rose-950/50 text-rose-200" };
-  if (total > 500) return { label: "XL", color: "border-orange-700 bg-orange-950/50 text-orange-200" };
-  if (total > 250) return { label: "L", color: "border-amber-700 bg-amber-950/50 text-amber-200" };
-  if (total > 100) return { label: "M", color: "border-sky-700 bg-sky-950/50 text-sky-200" };
-  if (total > 30) return { label: "S", color: "border-emerald-700 bg-emerald-950/50 text-emerald-200" };
-  return { label: "XS", color: "border-slate-600 bg-slate-900/50 text-slate-300" };
+  if (total > 10000) return { label: "XXL", color: "border-rose-300 bg-rose-50 text-rose-800 dark:border-rose-700 dark:bg-rose-950/50 dark:text-rose-200" };
+  if (total > 5000) return { label: "XL", color: "border-orange-300 bg-orange-50 text-orange-800 dark:border-orange-700 dark:bg-orange-950/50 dark:text-orange-200" };
+  if (total > 1000) return { label: "L", color: "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-700 dark:bg-amber-950/50 dark:text-amber-200" };
+  if (total > 500) return { label: "M", color: "border-sky-300 bg-sky-50 text-sky-800 dark:border-sky-700 dark:bg-sky-950/50 dark:text-sky-200" };
+  if (total > 100) return { label: "S", color: "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-200" };
+  return { label: "XS", color: "border-slate-300 bg-slate-50 text-slate-700 dark:border-slate-600 dark:bg-slate-900/50 dark:text-slate-300" };
 }
 
 function summarizeReviews(reviews: ReviewItem[]) {
@@ -350,15 +773,14 @@ export function Dashboard() {
   const [page, setPage] = useState(1);
 
   const { aiMode } = useAiMode();
+  const { advancedUi } = useAdvancedUi();
 
   const [priorityView, setPriorityView] = useState<PriorityView>("all");
   const [prioritySort, setPrioritySort] = useState<PrioritySort>("updatedDesc");
   const [search, setSearch] = useState("");
 
   const [detailsOpenFor, setDetailsOpenFor] = useState<number | null>(null);
-  const [glanceByPr, setGlanceByPr] = useState<
-    Record<number, { loading: boolean; markdown?: string; error?: string }>
-  >({});
+  const [glanceByPr, setGlanceByPr] = useState<Record<number, GlanceData>>({});
   const [insightsByPr, setInsightsByPr] = useState<
     Record<number, { loading: boolean; markdown?: string; error?: string }>
   >({});
@@ -370,20 +792,64 @@ export function Dashboard() {
   const [reviewOpenFor, setReviewOpenFor] = useState<number | null>(null);
   const [reviewLoading, setReviewLoading] = useState(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
-  const [reviewMarkdown, setReviewMarkdown] = useState<string | null>(null);
-  const [reviewModel, setReviewModel] = useState<string | null>(null);
+  const [reviewData, setReviewData] = useState<ReviewData | null>(null);
+  const [reviewPrompt, setReviewPrompt] = useState("");
+  const [submitLoading, setSubmitLoading] = useState(false);
+  const [submitResult, setSubmitResult] = useState<{ success: boolean; url?: string; error?: string } | null>(null);
+
+  const [savedRules, setSavedRules] = useState<Array<{ name: string; prompt: string }>>([]);
+  const [savingRule, setSavingRule] = useState(false);
+  const [saveRuleName, setSaveRuleName] = useState("");
+  const [showSaveInput, setShowSaveInput] = useState(false);
 
   const canLoad = owner.trim() && repo.trim();
 
   useEffect(() => {
-    // Keep AI-only UI from showing stale AI output when AI mode is toggled off.
     if (!aiMode) {
       setDetailsOpenFor(null);
       setReviewOpenFor(null);
-      setReviewMarkdown(null);
+      setReviewData(null);
       setReviewError(null);
     }
   }, [aiMode]);
+
+  const fetchSavedRules = useCallback(async () => {
+    if (!canLoad) return;
+    try {
+      const res = await fetch(`/api/rules?owner=${encodeURIComponent(owner.trim())}&repo=${encodeURIComponent(repo.trim())}`);
+      const json = (await res.json()) as { rules?: Array<{ name: string; prompt: string }> };
+      setSavedRules(json.rules ?? []);
+    } catch {
+      setSavedRules([]);
+    }
+  }, [canLoad, owner, repo]);
+
+  const handleSaveRule = async () => {
+    if (!canLoad || !saveRuleName.trim() || !reviewPrompt.trim()) return;
+    setSavingRule(true);
+    try {
+      await fetch("/api/rules", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ owner: owner.trim(), repo: repo.trim(), name: saveRuleName.trim(), prompt: reviewPrompt.trim() }),
+      });
+      await fetchSavedRules();
+      setShowSaveInput(false);
+      setSaveRuleName("");
+    } finally {
+      setSavingRule(false);
+    }
+  };
+
+  const handleDeleteRule = async (name: string) => {
+    if (!canLoad) return;
+    await fetch("/api/rules", {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ owner: owner.trim(), repo: repo.trim(), name }),
+    });
+    await fetchSavedRules();
+  };
 
   const fetchPrs = useCallback(
     async (targetPage: number, searchQuery?: string) => {
@@ -417,6 +883,10 @@ export function Dashboard() {
   );
 
   useEffect(() => {
+    if (data && canLoad) void fetchSavedRules();
+  }, [data, canLoad, fetchSavedRules]);
+
+  useEffect(() => {
     const q = search.trim();
     if (!q || !canLoad) return;
     const timer = setTimeout(() => void fetchPrs(1, q), 400);
@@ -428,15 +898,20 @@ export function Dashboard() {
     setReviewOpenFor(number);
     setReviewLoading(true);
     setReviewError(null);
-    setReviewMarkdown(null);
-    setReviewModel(null);
+    setReviewData(null);
+    setSubmitResult(null);
     try {
+      const payload: Record<string, unknown> = { owner: owner.trim(), repo: repo.trim(), number };
+      if (reviewPrompt.trim()) payload.customPrompt = reviewPrompt.trim();
       const res = await fetch("/api/review", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ owner: owner.trim(), repo: repo.trim(), number }),
+        body: JSON.stringify(payload),
       });
       const json = (await res.json()) as {
+        summary?: string;
+        verdict?: string;
+        comments?: ReviewCommentData[];
         markdown?: string;
         model?: string;
         error?: string;
@@ -444,12 +919,46 @@ export function Dashboard() {
       if (!res.ok) {
         throw new Error(json.error ?? `Review failed (${res.status})`);
       }
-      setReviewMarkdown(json.markdown ?? "");
-      setReviewModel(json.model ?? null);
+      setReviewData({
+        summary: json.summary,
+        verdict: json.verdict,
+        comments: json.comments,
+        markdown: json.markdown,
+        model: json.model,
+      });
     } catch (e) {
       setReviewError(e instanceof Error ? e.message : "Review failed");
     } finally {
       setReviewLoading(false);
+    }
+  };
+
+  const submitReviewToPr = async () => {
+    if (!reviewOpenFor || !reviewData?.summary || !reviewData.comments?.length) return;
+    setSubmitLoading(true);
+    setSubmitResult(null);
+    try {
+      const res = await fetch("/api/review/submit", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          owner: owner.trim(),
+          repo: repo.trim(),
+          number: reviewOpenFor,
+          summary: reviewData.summary,
+          verdict: reviewData.verdict,
+          comments: reviewData.comments,
+        }),
+      });
+      const json = (await res.json()) as { success?: boolean; url?: string; error?: string };
+      if (!res.ok) {
+        throw new Error(json.error ?? `Failed to submit review (${res.status})`);
+      }
+      setSubmitResult({ success: true, url: json.url });
+    } catch (e) {
+      setSubmitResult({ success: false, error: e instanceof Error ? e.message : "Failed to submit review" });
+    } finally {
+      setSubmitLoading(false);
     }
   };
 
@@ -505,9 +1014,22 @@ export function Dashboard() {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ owner: owner.trim(), repo: repo.trim(), number }),
         });
-        const json = (await res.json()) as { markdown?: string; error?: string };
+        const json = (await res.json()) as {
+          summary?: string;
+          walkthrough?: WalkthroughEntry[];
+          markdown?: string;
+          error?: string;
+        };
         if (!res.ok) throw new Error(json.error ?? `Glance failed (${res.status})`);
-        setGlanceByPr((prev) => ({ ...prev, [number]: { loading: false, markdown: json.markdown ?? "" } }));
+        setGlanceByPr((prev) => ({
+          ...prev,
+          [number]: {
+            loading: false,
+            summary: json.summary,
+            walkthrough: json.walkthrough,
+            markdown: json.markdown,
+          },
+        }));
       } catch (e) {
         setGlanceByPr((prev) => ({
           ...prev,
@@ -545,7 +1067,8 @@ export function Dashboard() {
     if (!aiMode || detailsOpenFor === null) return;
 
     const gl = glanceByPr[detailsOpenFor];
-    if (!gl?.loading && gl?.markdown === undefined && !gl?.error) {
+    const glHasData = gl?.summary || gl?.walkthrough?.length || gl?.markdown;
+    if (!gl?.loading && !glHasData && !gl?.error) {
       void runGlance(detailsOpenFor);
     }
 
@@ -675,7 +1198,7 @@ export function Dashboard() {
           </button>
           <button
             type="button"
-            className="rounded-md border border-amber-900/60 bg-amber-950/40 px-4 py-2 text-sm font-medium text-amber-100 hover:bg-amber-950/70 disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded-md border border-amber-600 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-800 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-100 dark:hover:bg-amber-950/70"
             disabled={!canLoad || !data?.pulls.length || reviewLoading || !aiMode}
             onClick={() => void reviewAllOnPage()}
             title="Runs reviews sequentially; the panel will show only the last PR in the batch (v1 limitation)."
@@ -685,8 +1208,92 @@ export function Dashboard() {
           <span className="text-xs text-slate-500">{paginationLabel}</span>
         </div>
 
+        {aiMode ? (
+          <div className="mt-3 flex flex-col gap-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Review rules</span>
+                <span className="text-[10px] text-slate-400">(applied alongside built-in rules)</span>
+              </div>
+              {savedRules.length > 0 ? (
+                <div className="flex items-center gap-1">
+                  <select
+                    className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs outline-none ring-emerald-500/40 focus:ring-2 dark:border-slate-700 dark:bg-slate-950"
+                    value=""
+                    onChange={(e) => {
+                      const rule = savedRules.find((r) => r.name === e.target.value);
+                      if (rule) setReviewPrompt(rule.prompt);
+                    }}
+                  >
+                    <option value="" disabled>Load saved rule…</option>
+                    {savedRules.map((r) => (
+                      <option key={r.name} value={r.name}>{r.name}</option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
+            </div>
+            <textarea
+              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none ring-emerald-500/40 placeholder:text-slate-400 focus:ring-2 dark:border-slate-700 dark:bg-slate-950 dark:placeholder:text-slate-600"
+              rows={2}
+              placeholder="e.g. Ensure all public functions have error handling. Check for proper logging. Flag any hardcoded secrets..."
+              value={reviewPrompt}
+              onChange={(e) => setReviewPrompt(e.target.value)}
+            />
+            <div className="flex items-center gap-2">
+              {showSaveInput ? (
+                <div className="flex items-center gap-1">
+                  <input
+                    className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs outline-none ring-emerald-500/40 focus:ring-2 dark:border-slate-700 dark:bg-slate-950"
+                    placeholder="Rule name"
+                    value={saveRuleName}
+                    onChange={(e) => setSaveRuleName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") void handleSaveRule(); }}
+                  />
+                  <button
+                    type="button"
+                    className="rounded-md bg-emerald-600 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-40"
+                    disabled={!saveRuleName.trim() || !reviewPrompt.trim() || savingRule}
+                    onClick={() => void handleSaveRule()}
+                  >
+                    {savingRule ? "Saving…" : "Save"}
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-900"
+                    onClick={() => { setShowSaveInput(false); setSaveRuleName(""); }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-900"
+                  disabled={!reviewPrompt.trim()}
+                  onClick={() => setShowSaveInput(true)}
+                >
+                  Save rule
+                </button>
+              )}
+              {savedRules.length > 0 ? (
+                <select
+                  className="rounded-md border border-rose-300 bg-white px-2 py-1 text-xs text-rose-600 outline-none hover:bg-rose-50 dark:border-rose-700 dark:bg-slate-950 dark:text-rose-400"
+                  value=""
+                  onChange={(e) => { if (e.target.value) void handleDeleteRule(e.target.value); }}
+                >
+                  <option value="" disabled>Delete rule…</option>
+                  {savedRules.map((r) => (
+                    <option key={r.name} value={r.name}>{r.name}</option>
+                  ))}
+                </select>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
         {error ? (
-          <p className="mt-3 rounded-md border border-rose-900/60 bg-rose-950/40 px-3 py-2 text-sm text-rose-100">
+          <p className="mt-3 rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-800 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-100">
             {error}
           </p>
         ) : null}
@@ -780,18 +1387,207 @@ export function Dashboard() {
             </div>
           </div>
 
+          {advancedUi ? (
+            <>
+              {/* KPI summary cards */}
+              {(() => {
+                const pulls = data.pulls;
+                const total = pulls.length;
+                const avgScore = total > 0 ? Math.round(pulls.reduce((s, p) => s + p.readiness.score, 0) / total) : 0;
+                const readyCount = pulls.filter((p) => isReviewReady(p)).length;
+                const ciFailCount = pulls.filter((p) => p.checks.failing > 0).length;
+                const staleCount = pulls.filter((p) => (Date.now() - Date.parse(p.created_at)) / (1000 * 60 * 60 * 24) > 14).length;
+                const cards: { value: string; label: string; sub?: string; tone: string }[] = [
+                  { value: String(total), label: "Total PRs", tone: "text-slate-900 dark:text-slate-100" },
+                  { value: String(avgScore), label: "Avg Score", tone: scoreTone(avgScore) },
+                  { value: `${readyCount}/${total}`, label: "Review Ready", sub: `${readyCount} of ${total}`, tone: readyCount > 0 ? "text-emerald-700 dark:text-emerald-300" : "text-slate-500" },
+                  { value: String(ciFailCount), label: "CI Failing", tone: ciFailCount > 0 ? "text-rose-700 dark:text-rose-300" : "text-emerald-700 dark:text-emerald-300" },
+                  { value: String(staleCount), label: "Stale (>14d)", tone: staleCount > 0 ? "text-amber-700 dark:text-amber-300" : "text-emerald-700 dark:text-emerald-300" },
+                ];
+                return (
+                  <div className="grid grid-cols-5 gap-3">
+                    {cards.map((c) => (
+                      <div
+                        key={c.label}
+                        className="flex flex-col items-center rounded-xl border border-slate-200 bg-white/80 px-3 py-4 dark:border-slate-800 dark:bg-slate-900/50"
+                      >
+                        <span className={`text-2xl font-bold ${c.tone}`}>{c.value}</span>
+                        <span className="mt-1 text-[10px] font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">{c.label}</span>
+                        {c.sub ? <span className="text-[10px] text-slate-400 dark:text-slate-500">{c.sub}</span> : null}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+
+              {/* Simplified table */}
+              <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
+                <table className="min-w-full divide-y divide-slate-200 text-left text-sm dark:divide-slate-800">
+                  <thead className="bg-slate-100/80 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-900/60">
+                    <tr>
+                      <th className="px-3 py-2">PR</th>
+                      <th className="px-3 py-2">Score</th>
+                      <th className="px-3 py-2">Status</th>
+                      <th className="px-3 py-2">Size</th>
+                      <th className="px-3 py-2">Activity</th>
+                      <th className="px-3 py-2">Review</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200 bg-white/60 dark:divide-slate-800 dark:bg-slate-950/40">
+                    {pullsForTable.map((p) => {
+                      const expanded = detailsOpenFor === p.number;
+                      const gl = glanceByPr[p.number];
+                      const ins = insightsByPr[p.number];
+                      const badge = prStatusBadge(p);
+                      const sz = prSize(p.additions, p.deletions);
+                      const age = timeAgo(p.created_at);
+                      const activity = timeAgo(p.last_activity_at);
+
+                      return (
+                        <Fragment key={p.number}>
+                          <tr className="align-top">
+                            <td className="px-3 py-3">
+                              <div className="flex items-start gap-2">
+                                <button
+                                  type="button"
+                                  className="rounded p-1 hover:bg-slate-100 disabled:opacity-40 dark:hover:bg-slate-900"
+                                  aria-label={`Toggle details for PR #${p.number}`}
+                                  aria-expanded={expanded}
+                                  onClick={() => setDetailsOpenFor(expanded ? null : p.number)}
+                                >
+                                  <span
+                                    className="inline-block text-slate-400 transition-transform"
+                                    style={{ transform: expanded ? "rotate(90deg)" : "rotate(0deg)" }}
+                                  >
+                                    ▸
+                                  </span>
+                                </button>
+                                <div className="min-w-0">
+                                  <a
+                                    href={`https://github.com/${owner}/${repo}/pull/${p.number}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="font-medium text-slate-900 hover:text-emerald-700 hover:underline dark:text-slate-100 dark:hover:text-emerald-400"
+                                  >#{p.number}</a>
+                                  <div className="max-w-xs text-xs text-slate-600 dark:text-slate-400">{p.title}</div>
+                                  <div className="mt-1 text-[11px] text-slate-500">{p.author}</div>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-3 py-3 text-center">
+                              <span className={`text-2xl font-bold ${scoreTone(p.readiness.score)}`}>{p.readiness.score}</span>
+                            </td>
+                            <td className="px-3 py-3">
+                              <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium ${badge.cls}`}>{badge.label}</span>
+                            </td>
+                            <td className="px-3 py-3">
+                              <div className="flex flex-col items-start gap-1">
+                                <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold ${sz.color}`}>{sz.label}</span>
+                                <span className="text-[11px] text-slate-500">
+                                  <span className="text-emerald-700 dark:text-emerald-400">+{p.additions}</span>{" "}
+                                  <span className="text-rose-700 dark:text-rose-400">-{p.deletions}</span>
+                                </span>
+                              </div>
+                            </td>
+                            <td className="px-3 py-3 text-xs text-slate-600 dark:text-slate-300">
+                              <div title={age.title}>
+                                <span className="text-slate-400 dark:text-slate-500">opened </span>
+                                <span className={ageBadgeColor(p.created_at)}>{age.text}</span>
+                              </div>
+                              <div title={activity.title} className="mt-0.5">
+                                <span className="text-slate-400 dark:text-slate-500">active </span>
+                                <span className={p.last_activity_at ? "text-slate-600 dark:text-slate-300" : "text-slate-400 dark:text-slate-500"}>{activity.text}</span>
+                              </div>
+                            </td>
+                            <td className="px-3 py-3">
+                              <button
+                                type="button"
+                                className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:hover:bg-slate-900"
+                                disabled={!aiMode || reviewLoading}
+                                title={!aiMode ? "Enable AI mode to run AI review" : undefined}
+                                onClick={() => void runReview(p.number)}
+                              >
+                                AI Review
+                              </button>
+                            </td>
+                          </tr>
+
+                          {expanded ? (
+                            <tr>
+                              <td colSpan={6} className="px-3 py-3">
+                                <div className="rounded-xl border border-slate-200 bg-white/60 p-3 dark:border-slate-800 dark:bg-slate-950/40">
+                                  <div className="mb-3 flex flex-wrap items-center gap-4 text-xs text-slate-500 dark:text-slate-400">
+                                    <span className="font-medium text-slate-900 dark:text-slate-100">#{p.number}</span>
+                                    <span>Score <span className={scoreTone(p.readiness.score)}>{p.readiness.score}</span></span>
+                                    <span>Checks <span className="text-rose-700 dark:text-rose-300">{p.checks.failing}F</span> <span className="text-amber-700 dark:text-amber-200">{p.checks.pending}P</span> / {p.checks.total}</span>
+                                    <span>Approvals <span className="text-emerald-700 dark:text-emerald-300">{p.readiness.breakdown.approvals}</span></span>
+                                    <span>Comments {p.comments + p.review_comments}</span>
+                                  </div>
+                                  {aiMode ? (
+                                    <div className="grid gap-3 md:grid-cols-2">
+                                      <div className="rounded-lg border border-slate-200 bg-white/60 p-3 dark:border-slate-800 dark:bg-slate-950/40">
+                                        <div className="flex items-center justify-between gap-3">
+                                          <h3 className="bg-gradient-to-r from-emerald-500 via-cyan-500 to-emerald-500 bg-clip-text text-sm font-bold uppercase tracking-wide text-transparent dark:from-emerald-400 dark:via-cyan-300 dark:to-emerald-400">
+                                            At a glance
+                                          </h3>
+                                          {gl?.loading ? <span className="text-xs text-slate-400">Generating...</span> : null}
+                                        </div>
+                                        {gl?.error ? <p className="mt-2 rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-xs text-rose-800 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-100">{gl.error}</p> : null}
+                                        {gl?.summary || gl?.walkthrough?.length ? (
+                                          <GlanceView summary={gl.summary ?? ""} walkthrough={gl.walkthrough ?? []} />
+                                        ) : gl?.markdown ? (
+                                          <GlanceFallback markdown={gl.markdown} />
+                                        ) : null}
+                                        {!gl?.loading && !gl?.summary && !gl?.walkthrough?.length && !gl?.markdown && !gl?.error ? (
+                                          <div className="mt-2">
+                                            <button type="button" className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-40" onClick={() => void runGlance(p.number)}>Generate glance</button>
+                                            <p className="mt-1 text-[11px] text-slate-500">Key code changes from the diff.</p>
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                      <div className="rounded-lg border border-slate-200 bg-white/60 p-3 dark:border-slate-800 dark:bg-slate-950/40">
+                                        <div className="flex items-center justify-between gap-3">
+                                          <h3 className="text-sm font-bold uppercase tracking-wide text-slate-700 dark:text-slate-300">Review Guide</h3>
+                                          {ins?.loading ? <span className="text-xs text-slate-400">Generating...</span> : null}
+                                        </div>
+                                        {ins?.error ? <p className="mt-2 rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-xs text-rose-800 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-100">{ins.error}</p> : null}
+                                        {ins?.markdown ? <InsightsView markdown={ins.markdown} /> : null}
+                                        {!ins?.loading && !ins?.markdown && !ins?.error ? (
+                                          <div className="mt-2">
+                                            <button type="button" className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-40" onClick={() => void runInsights(p.number)}>Generate guide</button>
+                                            <p className="mt-1 text-[11px] text-slate-500">Checklist, risks, and testing suggestions.</p>
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-950/30 dark:text-slate-400">
+                                      Enable AI mode to generate glance and reviewer insights for this PR.
+                                    </div>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          ) : null}
+                        </Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          ) : (
           <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
             <table className="min-w-full divide-y divide-slate-200 text-left text-sm dark:divide-slate-800">
               <thead className="bg-slate-100/80 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-900/60">
                 <tr>
                   <th className="px-3 py-2">PR</th>
                   <th className="px-3 py-2">Score</th>
-                  <th className="px-3 py-2">Size</th>
-                  <th className="px-3 py-2">Review Ready</th>
-                  <th className="px-3 py-2">Checks</th>
-                  <th className="px-3 py-2">ACK</th>
-                  <th className="px-3 py-2">Comments</th>
+                  <th className="px-3 py-2">Status</th>
                   <th className="px-3 py-2">Mergeable</th>
+                  <th className="px-3 py-2">Size</th>
+                  <th className="px-3 py-2">CI &amp; Reviews</th>
+                  <th className="px-3 py-2">Activity</th>
                   <th className="px-3 py-2">Review</th>
                 </tr>
               </thead>
@@ -810,7 +1606,7 @@ export function Dashboard() {
                           <div className="flex items-start gap-2">
                             <button
                               type="button"
-                              className="rounded p-1 hover:bg-slate-900 disabled:opacity-40"
+                              className="rounded p-1 hover:bg-slate-100 disabled:opacity-40 dark:hover:bg-slate-900"
                               aria-label={`Toggle details for PR #${p.number}`}
                               aria-expanded={expanded}
                               onClick={() => setDetailsOpenFor(expanded ? null : p.number)}
@@ -824,9 +1620,14 @@ export function Dashboard() {
                             </button>
 
                             <div className="min-w-0">
-                              <div className="font-medium text-slate-100">#{p.number}</div>
-                              <div className="max-w-xs text-xs text-slate-400">{p.title}</div>
-                              <div className="mt-1 text-[11px] text-slate-500">
+                              <a
+                                href={`https://github.com/${owner}/${repo}/pull/${p.number}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="font-medium text-slate-900 hover:text-emerald-700 hover:underline dark:text-slate-100 dark:hover:text-emerald-400"
+                              >#{p.number}</a>
+                              <div className="max-w-xs text-xs text-slate-600 dark:text-slate-400">{p.title}</div>
+                              <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-500">
                                 {p.author} · {p.head} → {p.base}
                                 {p.draft ? " · draft" : ""}
                               </div>
@@ -834,34 +1635,73 @@ export function Dashboard() {
                           </div>
                         </td>
 
-                        <td className="px-3 py-3">
-                          <div className={`text-lg font-semibold ${scoreTone(p.readiness.score)}`}>
+                        <td className="px-3 py-3 text-center">
+                          <span className={`text-2xl font-bold ${scoreTone(p.readiness.score)}`}>
                             {p.readiness.score}
+                          </span>
+                        </td>
+
+                        <td className="px-3 py-3">
+                          <div className="flex flex-col gap-1.5">
+                            <div
+                              title={reviewReadyReason(p)}
+                              className={`inline-flex w-fit items-center rounded-full border px-2 py-0.5 text-xs font-medium ${
+                                ready
+                                  ? "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-100"
+                                  : "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-100"
+                              }`}
+                            >
+                              {ready ? "Ready" : "Not ready"}
+                            </div>
+                            <div className="grid gap-0.5 text-[11px]">
+                              {p.readiness.breakdown.draftPenalty > 0 && (
+                                <div className="text-amber-700 dark:text-amber-300">−{p.readiness.breakdown.draftPenalty} draft</div>
+                              )}
+                              {p.readiness.breakdown.mergePenalty > 0 && (
+                                <div className="text-rose-700 dark:text-rose-300">−{p.readiness.breakdown.mergePenalty} merge</div>
+                              )}
+                              {p.readiness.breakdown.reviewPenalty > 0 && (
+                                <div className="text-rose-700 dark:text-rose-300">−{p.readiness.breakdown.reviewPenalty} review</div>
+                              )}
+                              {p.readiness.breakdown.checkPenalty > 0 && (
+                                <div className="text-rose-700 dark:text-rose-300">−{p.readiness.breakdown.checkPenalty} checks</div>
+                              )}
+                              {p.readiness.breakdown.approvalBonus > 0 && (
+                                <div className="text-emerald-700 dark:text-emerald-300">+{p.readiness.breakdown.approvalBonus} approval</div>
+                              )}
+                              {p.readiness.breakdown.draftPenalty === 0 &&
+                                p.readiness.breakdown.mergePenalty === 0 &&
+                                p.readiness.breakdown.reviewPenalty === 0 &&
+                                p.readiness.breakdown.checkPenalty === 0 &&
+                                p.readiness.breakdown.approvalBonus === 0 && (
+                                <div className="text-slate-500">no penalties</div>
+                              )}
+                            </div>
                           </div>
-                          <div className="mt-1 grid gap-0.5 text-[11px]">
-                            {p.readiness.breakdown.draftPenalty > 0 && (
-                              <div className="text-amber-300">−{p.readiness.breakdown.draftPenalty} draft</div>
-                            )}
-                            {p.readiness.breakdown.mergePenalty > 0 && (
-                              <div className="text-rose-300">−{p.readiness.breakdown.mergePenalty} merge</div>
-                            )}
-                            {p.readiness.breakdown.reviewPenalty > 0 && (
-                              <div className="text-rose-300">−{p.readiness.breakdown.reviewPenalty} review</div>
-                            )}
-                            {p.readiness.breakdown.checkPenalty > 0 && (
-                              <div className="text-rose-300">−{p.readiness.breakdown.checkPenalty} checks</div>
-                            )}
-                            {p.readiness.breakdown.approvalBonus > 0 && (
-                              <div className="text-emerald-300">+{p.readiness.breakdown.approvalBonus} approval</div>
-                            )}
-                            {p.readiness.breakdown.draftPenalty === 0 &&
-                              p.readiness.breakdown.mergePenalty === 0 &&
-                              p.readiness.breakdown.reviewPenalty === 0 &&
-                              p.readiness.breakdown.checkPenalty === 0 &&
-                              p.readiness.breakdown.approvalBonus === 0 && (
-                              <div className="text-slate-500">no penalties</div>
-                            )}
-                          </div>
+                        </td>
+
+                        <td className="px-3 py-3 text-xs">
+                          {(() => {
+                            const conflicted = p.mergeable === false || p.mergeable_state === "dirty";
+                            const clean = p.mergeable === true && !conflicted;
+                            const unknown = p.mergeable === null;
+                            const tags: { label: string; cls: string }[] = [];
+                            if (clean) tags.push({ label: "Clean", cls: "text-emerald-700 dark:text-emerald-300" });
+                            if (conflicted) tags.push({ label: "Conflict", cls: "text-rose-700 dark:text-rose-300" });
+                            if (unknown) tags.push({ label: "Unknown", cls: "text-slate-500 dark:text-slate-400" });
+                            if (p.draft) tags.push({ label: "Draft", cls: "text-amber-700 dark:text-amber-300" });
+                            if (p.checks.failing > 0) tags.push({ label: "CI failing", cls: "text-rose-700 dark:text-rose-300" });
+                            if (p.checks.pending > 0) tags.push({ label: "CI pending", cls: "text-amber-600 dark:text-amber-200" });
+                            if (p.readiness.breakdown.changesRequested > 0) tags.push({ label: "Changes requested", cls: "text-rose-700 dark:text-rose-300" });
+                            if (p.readiness.breakdown.approvals > 0) tags.push({ label: `${p.readiness.breakdown.approvals} approved`, cls: "text-emerald-700 dark:text-emerald-300" });
+                            return (
+                              <div className="flex flex-col gap-0.5">
+                                {tags.map((t, ti) => (
+                                  <span key={ti} className={t.cls}>{t.label}</span>
+                                ))}
+                              </div>
+                            );
+                          })()}
                         </td>
 
                         <td className="px-3 py-3">
@@ -873,8 +1713,8 @@ export function Dashboard() {
                                   {sz.label}
                                 </span>
                                 <span className="text-[11px] text-slate-500">
-                                  <span className="text-emerald-400">+{p.additions}</span>{" "}
-                                  <span className="text-rose-400">−{p.deletions}</span>
+                                  <span className="text-emerald-700 dark:text-emerald-400">+{p.additions}</span>{" "}
+                                  <span className="text-rose-700 dark:text-rose-400">−{p.deletions}</span>
                                 </span>
                               </div>
                             );
@@ -882,60 +1722,51 @@ export function Dashboard() {
                         </td>
 
                         <td className="px-3 py-3 text-xs">
-                          <div
-                            title={reviewReadyReason(p)}
-                            className={`inline-flex items-center rounded-full border px-2 py-0.5 font-medium ${
-                              ready
-                                ? "border-emerald-900/60 bg-emerald-950/40 text-emerald-100"
-                                : "border-amber-900/60 bg-amber-950/40 text-amber-100"
-                            }`}
-                          >
-                            {ready ? "Ready" : "Not ready"}
+                          <div className="flex flex-col gap-1.5">
+                            <div className="rounded-md border border-slate-200 bg-slate-50/60 px-2 py-1.5 dark:border-slate-700/50 dark:bg-slate-900/40">
+                              <div className="text-[10px] font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">Checks</div>
+                              <div className="mt-0.5 text-slate-600 dark:text-slate-300">total {p.checks.total}</div>
+                              <div className="text-rose-600 dark:text-rose-300">fail {p.checks.failing}</div>
+                              <div className="text-amber-600 dark:text-amber-200">pending {p.checks.pending}</div>
+                            </div>
+                            <div className="rounded-md border border-slate-200 bg-slate-50/60 px-2 py-1.5 dark:border-slate-700/50 dark:bg-slate-900/40">
+                              <div className="text-[10px] font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">Reviews</div>
+                              <div className="mt-0.5 text-emerald-700 dark:text-emerald-300">approve {ack.approved}</div>
+                              <div className="text-rose-600 dark:text-rose-300">changes {ack.changes}</div>
+                              <div className="text-slate-500 dark:text-slate-400">comment {ack.commented}</div>
+                              <div className="text-slate-400 dark:text-slate-500">people {ack.participants}</div>
+                            </div>
                           </div>
                         </td>
 
-                        <td className="px-3 py-3 text-xs text-slate-300">
-                          <div>total {p.checks.total}</div>
-                          <div className="text-rose-300">fail {p.checks.failing}</div>
-                          <div className="text-amber-200">pending {p.checks.pending}</div>
-                        </td>
-
-                        <td className="px-3 py-3 text-xs text-slate-300">
-                          <div className="text-emerald-300">approve {ack.approved}</div>
-                          <div className="text-rose-300">changes {ack.changes}</div>
-                          <div className="text-slate-400">comment {ack.commented}</div>
-                          <div className="text-slate-500">people {ack.participants}</div>
-                        </td>
-
-                        <td className="px-3 py-3 text-xs text-slate-300">
-                          <div>issue {p.comments}</div>
-                          <div>review {p.review_comments}</div>
-                          <div className="text-slate-500">commits {p.commits}</div>
-                        </td>
-
-                        <td className="px-3 py-3 text-xs">
-                          {(() => {
-                            const conflicted = p.mergeable === false || p.mergeable_state === "dirty";
-                            const clean = p.mergeable === true && !conflicted;
-                            const unknown = p.mergeable === null;
-                            const tags: { label: string; cls: string }[] = [];
-                            if (clean) tags.push({ label: "Clean", cls: "text-emerald-300" });
-                            if (conflicted) tags.push({ label: "Conflict", cls: "text-rose-300" });
-                            if (unknown) tags.push({ label: "Unknown", cls: "text-slate-400" });
-                            if (p.draft) tags.push({ label: "Draft", cls: "text-amber-300" });
-                            if (p.checks.failing > 0) tags.push({ label: "CI failing", cls: "text-rose-300" });
-                            if (p.checks.pending > 0) tags.push({ label: "CI pending", cls: "text-amber-200" });
-                            if (p.readiness.breakdown.changesRequested > 0) tags.push({ label: "Changes requested", cls: "text-rose-300" });
-                            if (p.readiness.breakdown.approvals > 0) tags.push({ label: `${p.readiness.breakdown.approvals} approved`, cls: "text-emerald-300" });
-                            return (
-                              <div className="flex flex-col gap-0.5">
-                                {tags.map((t, ti) => (
-                                  <span key={ti} className={t.cls}>{t.label}</span>
-                                ))}
+                        {(() => {
+                          const age = timeAgo(p.created_at);
+                          const activity = timeAgo(p.last_activity_at);
+                          return (
+                            <td className="px-3 py-3 text-xs">
+                              <div className="flex flex-col gap-1.5">
+                                <div className="rounded-md border border-slate-200 bg-slate-50/60 px-2 py-1.5 dark:border-slate-700/50 dark:bg-slate-900/40">
+                                  <div className="text-[10px] font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">Timeline</div>
+                                  <div className="mt-0.5 text-slate-600 dark:text-slate-300" title={age.title}>
+                                    <span className="text-slate-400 dark:text-slate-500">opened </span>
+                                    <span className={ageBadgeColor(p.created_at)}>{age.text}</span>
+                                  </div>
+                                  <div className="text-slate-600 dark:text-slate-300" title={activity.title}>
+                                    <span className="text-slate-400 dark:text-slate-500">active </span>
+                                    <span className={p.last_activity_at ? "text-slate-600 dark:text-slate-300" : "text-slate-400 dark:text-slate-500"}>
+                                      {activity.text}
+                                    </span>
+                                  </div>
+                                </div>
+                                <div className="rounded-md border border-slate-200 bg-slate-50/60 px-2 py-1.5 dark:border-slate-700/50 dark:bg-slate-900/40">
+                                  <div className="text-[10px] font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">Comments</div>
+                                  <div className="mt-0.5 text-slate-600 dark:text-slate-300">issue {p.comments} · review {p.review_comments}</div>
+                                  <div className="text-slate-400 dark:text-slate-500">commits {p.commits}</div>
+                                </div>
                               </div>
-                            );
-                          })()}
-                        </td>
+                            </td>
+                          );
+                        })()}
 
                         <td className="px-3 py-3">
                           <button
@@ -952,31 +1783,31 @@ export function Dashboard() {
 
                       {expanded ? (
                         <tr>
-                          <td colSpan={9} className="px-3 py-3">
+                          <td colSpan={8} className="px-3 py-3">
                             <div className="rounded-xl border border-slate-200 bg-white/60 p-3 dark:border-slate-800 dark:bg-slate-950/40">
                               {/* Compact status bar */}
-                              <div className="mb-3 flex flex-wrap items-center gap-4 text-xs text-slate-400">
-                                <span className="font-medium text-slate-100">#{p.number}</span>
+                              <div className="mb-3 flex flex-wrap items-center gap-4 text-xs text-slate-500 dark:text-slate-400">
+                                <span className="font-medium text-slate-900 dark:text-slate-100">#{p.number}</span>
                                 <span>
                                   Readiness{" "}
-                                  <span className={ready ? "text-emerald-300" : "text-amber-200"}>{p.readiness.score}</span>
+                                  <span className={ready ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-200"}>{p.readiness.score}</span>
                                 </span>
                                 <span>
                                   Checks{" "}
-                                  <span className="text-rose-300">{p.checks.failing}F</span>{" "}
-                                  <span className="text-amber-200">{p.checks.pending}P</span>
+                                  <span className="text-rose-700 dark:text-rose-300">{p.checks.failing}F</span>{" "}
+                                  <span className="text-amber-700 dark:text-amber-200">{p.checks.pending}P</span>
                                 </span>
                                 <span>
-                                  Approvals <span className="text-emerald-300">{p.readiness.breakdown.approvals}</span>
+                                  Approvals <span className="text-emerald-700 dark:text-emerald-300">{p.readiness.breakdown.approvals}</span>
                                   {" · "}
-                                  Changes requested <span className="text-rose-300">{p.readiness.breakdown.changesRequested}</span>
+                                  Changes requested <span className="text-rose-700 dark:text-rose-300">{p.readiness.breakdown.changesRequested}</span>
                                 </span>
                                 <span>
                                   Merge{" "}
                                   {p.mergeable === null ? "unknown" : p.mergeable ? (
-                                    <span className="text-emerald-300">clean</span>
+                                    <span className="text-emerald-700 dark:text-emerald-300">clean</span>
                                   ) : (
-                                    <span className="text-rose-300">conflict</span>
+                                    <span className="text-rose-700 dark:text-rose-300">conflict</span>
                                   )}
                                 </span>
                               </div>
@@ -995,14 +1826,18 @@ export function Dashboard() {
                                     </div>
 
                                     {gl?.error ? (
-                                      <p className="mt-2 rounded-md border border-rose-900/60 bg-rose-950/40 px-3 py-2 text-xs text-rose-100">
+                                      <p className="mt-2 rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-xs text-rose-800 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-100">
                                         {gl.error}
                                       </p>
                                     ) : null}
 
-                                    {gl?.markdown ? <GlanceView markdown={gl.markdown} /> : null}
+                                    {gl?.summary || gl?.walkthrough?.length ? (
+                                      <GlanceView summary={gl.summary ?? ""} walkthrough={gl.walkthrough ?? []} />
+                                    ) : gl?.markdown ? (
+                                      <GlanceFallback markdown={gl.markdown} />
+                                    ) : null}
 
-                                    {!gl?.loading && !gl?.markdown && !gl?.error ? (
+                                    {!gl?.loading && !gl?.summary && !gl?.walkthrough?.length && !gl?.markdown && !gl?.error ? (
                                       <div className="mt-2">
                                         <button
                                           type="button"
@@ -1030,7 +1865,7 @@ export function Dashboard() {
                                     </div>
 
                                     {ins?.error ? (
-                                      <p className="mt-2 rounded-md border border-rose-900/60 bg-rose-950/40 px-3 py-2 text-xs text-rose-100">
+                                      <p className="mt-2 rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-xs text-rose-800 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-100">
                                         {ins.error}
                                       </p>
                                     ) : null}
@@ -1054,7 +1889,7 @@ export function Dashboard() {
                                   </div>
                                 </div>
                               ) : (
-                                <div className="rounded-lg border border-slate-800 bg-slate-950/30 p-3 text-xs text-slate-400">
+                                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-950/30 dark:text-slate-400">
                                   Enable AI mode to generate glance and reviewer insights for this PR.
                                 </div>
                               )}
@@ -1068,6 +1903,7 @@ export function Dashboard() {
               </tbody>
             </table>
           </div>
+          )}
 
           <p className="text-xs text-slate-500">
             Changing per-page resets the selector to page 1; click Load PRs again if you want that slice
@@ -1078,35 +1914,108 @@ export function Dashboard() {
 
       {reviewOpenFor !== null ? (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center dark:bg-black/60">
-          <div className="max-h-[85vh] w-full max-w-3xl overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl dark:border-slate-800 dark:bg-slate-950">
-            <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-slate-800">
-              <div className="text-sm font-medium">
-                Review for #{reviewOpenFor}
-                {reviewModel ? <span className="text-slate-500"> · {reviewModel}</span> : null}
+          <div className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl dark:border-slate-800 dark:bg-slate-950">
+            <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-slate-800">
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <span>Review for #{reviewOpenFor}</span>
+                {reviewData?.model ? <span className="text-slate-500"> · {reviewData.model}</span> : null}
+                {reviewData?.verdict ? (
+                  <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold ${(VERDICT_CONFIG[reviewData.verdict] ?? VERDICT_CONFIG.comment).cls}`}>
+                    {(VERDICT_CONFIG[reviewData.verdict] ?? VERDICT_CONFIG.comment).label}
+                  </span>
+                ) : null}
               </div>
-              <button
-                type="button"
-                className="rounded-md px-2 py-1 text-sm text-slate-400 hover:bg-slate-900 hover:text-slate-100"
-                onClick={() => {
-                  setReviewOpenFor(null);
-                  setReviewMarkdown(null);
-                  setReviewError(null);
-                }}
-              >
-                Close
-              </button>
+              <div className="flex items-center gap-2">
+                {reviewData?.summary && reviewData.comments?.length ? (
+                  <button
+                    type="button"
+                    className="rounded-md border border-emerald-500 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-800 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200 dark:hover:bg-emerald-950/70"
+                    disabled={submitLoading || submitResult?.success === true}
+                    onClick={() => void submitReviewToPr()}
+                  >
+                    {submitLoading ? "Submitting…" : submitResult?.success ? "Submitted" : "Submit to PR"}
+                  </button>
+                ) : null}
+                {reviewData ? (
+                  <button
+                    type="button"
+                    className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-900"
+                    onClick={() => {
+                      const text = reviewData.markdown ?? JSON.stringify(reviewData, null, 2);
+                      void navigator.clipboard.writeText(text);
+                    }}
+                  >
+                    Copy
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="rounded-md px-2 py-1 text-sm text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-900 dark:hover:text-slate-100"
+                  onClick={() => {
+                    setReviewOpenFor(null);
+                    setReviewData(null);
+                    setReviewError(null);
+                    setSubmitResult(null);
+                  }}
+                >
+                  Close
+                </button>
+              </div>
             </div>
-            <div className="space-y-3 overflow-y-auto p-4 text-sm">
+            <div className="min-h-0 flex-1 overflow-y-auto p-4 text-sm">
               {reviewLoading ? <p className="text-slate-400">Generating review…</p> : null}
               {reviewError ? (
-                <p className="rounded-md border border-rose-900/60 bg-rose-950/40 px-3 py-2 text-rose-100">
+                <p className="rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-rose-800 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-100">
                   {reviewError}
                 </p>
               ) : null}
-              {reviewMarkdown ? (
-                <article className="whitespace-pre-wrap font-mono text-xs leading-relaxed text-slate-200">
-                  {reviewMarkdown}
-                </article>
+              {submitResult?.success ? (
+                <div className="mb-3 rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200">
+                  Review submitted to PR.{" "}
+                  {submitResult.url ? (
+                    <a href={submitResult.url} target="_blank" rel="noopener noreferrer" className="font-medium underline">
+                      View on GitHub
+                    </a>
+                  ) : null}
+                </div>
+              ) : submitResult?.error ? (
+                <div className="mb-3 rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-800 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-100">
+                  {submitResult.error}
+                </div>
+              ) : null}
+              {reviewData?.summary && reviewData.comments?.length ? (
+                <ReviewCommentsView
+                  summary={reviewData.summary}
+                  verdict={reviewData.verdict ?? "comment"}
+                  comments={reviewData.comments}
+                  onUpdateSummary={(s) => { setSubmitResult(null); setReviewData((prev) => prev ? { ...prev, summary: s } : prev); }}
+                  onUpdateVerdict={(v) => { setSubmitResult(null); setReviewData((prev) => prev ? { ...prev, verdict: v } : prev); }}
+                  onUpdateComment={(idx, c) => {
+                    setSubmitResult(null);
+                    setReviewData((prev) => {
+                      if (!prev?.comments) return prev;
+                      const next = [...prev.comments];
+                      next[idx] = c;
+                      return { ...prev, comments: next };
+                    });
+                  }}
+                  onDeleteComment={(idx) => {
+                    setSubmitResult(null);
+                    setReviewData((prev) => {
+                      if (!prev?.comments) return prev;
+                      return { ...prev, comments: prev.comments.filter((_, i) => i !== idx) };
+                    });
+                  }}
+                  onAddComment={(c) => {
+                    setSubmitResult(null);
+                    setReviewData((prev) => {
+                      if (!prev) return prev;
+                      return { ...prev, comments: [...(prev.comments ?? []), c] };
+                    });
+                  }}
+                />
+              ) : reviewData?.markdown ? (
+                <ReviewFallback markdown={reviewData.markdown} />
               ) : null}
             </div>
           </div>

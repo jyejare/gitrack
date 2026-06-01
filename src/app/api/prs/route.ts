@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
+  getLatestCommentDate,
   getPullDetail,
   listCheckRunsForRef,
   listCommitStatuses,
@@ -13,9 +14,10 @@ import { computeReadiness, summarizeChecks } from "@/lib/readiness";
 export const runtime = "nodejs";
 
 async function enrichPull(owner: string, repo: string, prNumber: number) {
-  const [detail, reviews] = await Promise.all([
+  const [detail, reviews, latestComment] = await Promise.all([
     getPullDetail(owner, repo, prNumber),
     listPullReviews(owner, repo, prNumber),
+    getLatestCommentDate(owner, repo, prNumber).catch(() => null),
   ]);
   const [checkRuns, commitStatuses] = await Promise.all([
     listCheckRunsForRef(owner, repo, detail.head.sha).catch(() => []),
@@ -31,6 +33,16 @@ async function enrichPull(owner: string, repo: string, prNumber: number) {
     checkRuns: allChecks,
   });
 
+  const activityDates: number[] = [];
+  for (const r of reviews) {
+    if (r.submitted_at) activityDates.push(Date.parse(r.submitted_at));
+  }
+  if (latestComment) activityDates.push(Date.parse(latestComment));
+  const last_activity_at =
+    activityDates.length > 0
+      ? new Date(Math.max(...activityDates)).toISOString()
+      : null;
+
   return {
     number: detail.number,
     title: detail.title,
@@ -41,7 +53,9 @@ async function enrichPull(owner: string, repo: string, prNumber: number) {
     mergeable_state: detail.mergeable_state,
     head: detail.head.ref,
     base: detail.base.ref,
+    created_at: detail.created_at,
     updated_at: detail.updated_at,
+    last_activity_at,
     comments: detail.comments,
     review_comments: detail.review_comments,
     commits: detail.commits,

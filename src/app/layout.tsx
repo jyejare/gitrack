@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { AiModeProvider } from "@/components/AiModeContext";
+import { AdvancedUiProvider } from "@/components/AdvancedUiContext";
 import { ThemeProvider } from "@/components/ThemeContext";
 
 export const metadata: Metadata = {
@@ -18,7 +19,9 @@ export default function RootLayout({
       <body className="min-h-screen">
         <ThemeProvider>
           <AiModeProvider>
-            <div className="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-8">{children}</div>
+            <AdvancedUiProvider>
+              <div className="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-8">{children}</div>
+            </AdvancedUiProvider>
           </AiModeProvider>
         </ThemeProvider>
       </body>

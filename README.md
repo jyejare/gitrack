@@ -19,6 +19,7 @@ Next.js app for **engineering org visibility** into pull requests: **merge readi
 | Provider | Key required | Notes |
 |----------|-------------|-------|
 | **Anthropic** | `ANTHROPIC_API_KEY` | Default model: `claude-3-5-sonnet-20241022` |
+| **Vertex AI** | GCP credentials (ADC) | Anthropic models via Google Cloud. Default model: `claude-sonnet-4@20250514` |
 | **Groq** | `GROQ_API_KEY` | Default model: `llama3-70b-8192` |
 | **Ollama** | None (local) | Default model: `llama3`, runs at `http://localhost:11434` |
 
@@ -37,13 +38,30 @@ Next.js app for **engineering org visibility** into pull requests: **merge readi
    | Variable | Required | Description |
    |----------|----------|-------------|
    | `GITHUB_TOKEN` | Yes | Classic PAT or fine-grained token with repo read access |
-   | `LLM_PROVIDER` | No | `anthropic`, `groq`, `ollama`, or unset for auto-detect |
+   | `LLM_PROVIDER` | No | `anthropic`, `vertex`, `groq`, `ollama`, or unset for auto-detect |
    | `ANTHROPIC_API_KEY` | If using Anthropic | Server-side only |
    | `ANTHROPIC_MODEL` | No | Override the default Claude model |
+   | `VERTEX_PROJECT_ID` | If using Vertex AI | GCP project ID |
+   | `VERTEX_REGION` | No | GCP region (default: `us-east5`) |
+   | `VERTEX_MODEL` | No | Override the default Vertex AI model |
    | `GROQ_API_KEY` | If using Groq | Server-side only |
    | `GROQ_MODEL` | No | Override the default Groq model |
    | `OLLAMA_HOST` | No | Ollama base URL (default: `http://localhost:11434`) |
    | `OLLAMA_MODEL` | No | Override the default Ollama model |
+
+   **Using Vertex AI (Anthropic models via Google Cloud):**
+
+   ```bash
+   # Authenticate with Google Cloud (one of these):
+   gcloud auth application-default login          # local dev
+   # or set GOOGLE_APPLICATION_CREDENTIALS to a service account key file
+
+   # Then set in .env.local:
+   LLM_PROVIDER=vertex
+   VERTEX_PROJECT_ID=my-gcp-project
+   # VERTEX_REGION=us-east5                       # optional, defaults to us-east5
+   # VERTEX_MODEL=claude-sonnet-4@20250514        # optional
+   ```
 
    **Using Ollama (no API key needed):**
 

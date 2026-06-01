@@ -1,5 +1,6 @@
 import { Dashboard } from "@/components/Dashboard";
 import { AiToggle } from "@/components/AiToggle";
+import { AdvancedUiToggle } from "@/components/AdvancedUiToggle";
 import { ThemeToggle } from "@/components/ThemeToggle";
 
 export default function Home() {
@@ -60,6 +61,7 @@ export default function Home() {
         </div>
         <div className="flex items-center gap-2">
           <AiToggle />
+          <AdvancedUiToggle />
           <ThemeToggle />
         </div>
       </header>

@@ -108,6 +108,7 @@ export type PullDetail = {
   additions: number;
   deletions: number;
   changed_files: number;
+  created_at: string;
   updated_at: string;
 };
 
@@ -179,6 +180,136 @@ export async function listCommitStatuses(owner: string, repo: string, sha: strin
         : s.state === "failure" || s.state === "error" ? "failure" as const
           : null,
   }));
+}
+
+export async function getLatestCommentDate(
+  owner: string,
+  repo: string,
+  number: number,
+): Promise<string | null> {
+  const [issueRes, reviewRes] = await Promise.all([
+    githubFetch(
+      `/repos/${owner}/${repo}/issues/${number}/comments?sort=created&direction=desc&per_page=1`,
+    ),
+    githubFetch(
+      `/repos/${owner}/${repo}/pulls/${number}/comments?sort=created&direction=desc&per_page=1`,
+    ),
+  ]);
+  const issueComments = (await issueRes.json()) as { created_at: string }[];
+  const reviewComments = (await reviewRes.json()) as { created_at: string }[];
+
+  const dates: number[] = [];
+  if (issueComments[0]?.created_at) dates.push(Date.parse(issueComments[0].created_at));
+  if (reviewComments[0]?.created_at) dates.push(Date.parse(reviewComments[0].created_at));
+  if (dates.length === 0) return null;
+  return new Date(Math.max(...dates)).toISOString();
+}
+
+export type SubmitReviewComment = {
+  path: string;
+  body: string;
+  line?: number;
+  start_line?: number;
+};
+
+export async function submitPrReview(
+  owner: string,
+  repo: string,
+  number: number,
+  input: {
+    event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
+    body: string;
+    comments: SubmitReviewComment[];
+  },
+) {
+  const inline = input.comments.filter((c) => c.line);
+  const orphaned = input.comments.filter((c) => !c.line);
+
+  let body = input.body;
+  if (orphaned.length > 0) {
+    body += "\n\n---\n\n" + orphaned.map((c) => c.body).join("\n\n---\n\n");
+  }
+
+  const ghComments = inline.map((c) => {
+    const obj: Record<string, unknown> = {
+      path: c.path,
+      body: c.body,
+      line: c.line,
+      side: "RIGHT",
+    };
+    if (c.start_line && c.start_line < c.line!) {
+      obj.start_line = c.start_line;
+      obj.start_side = "RIGHT";
+    }
+    return obj;
+  });
+
+  const res = await githubFetch(`/repos/${owner}/${repo}/pulls/${number}/reviews`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      event: input.event,
+      body,
+      ...(ghComments.length > 0 ? { comments: ghComments } : {}),
+    }),
+  });
+
+  return (await res.json()) as { id: number; html_url?: string };
+}
+
+/**
+ * Parse a unified diff and return the set of right-side (new file) line numbers
+ * visible in each file's hunks. GitHub only accepts inline review comments on
+ * lines that appear in the diff.
+ */
+export function parseDiffValidLines(diff: string): Map<string, Set<number>> {
+  const result = new Map<string, Set<number>>();
+  const lines = diff.split("\n");
+  let currentFile: string | null = null;
+  let rightLine = 0;
+
+  for (const raw of lines) {
+    const fileMatch = raw.match(/^diff --git a\/.+ b\/(.+)$/);
+    if (fileMatch) {
+      currentFile = fileMatch[1];
+      if (!result.has(currentFile)) result.set(currentFile, new Set());
+      continue;
+    }
+
+    const hunkMatch = raw.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (hunkMatch) {
+      rightLine = Number(hunkMatch[1]);
+      continue;
+    }
+
+    if (!currentFile || rightLine === 0) continue;
+
+    if (raw.startsWith("-")) {
+      // deleted line — only on left side, don't advance right counter
+      continue;
+    }
+    if (raw.startsWith("+") || raw.startsWith(" ")) {
+      result.get(currentFile)!.add(rightLine);
+      rightLine++;
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Given a target line and the set of valid lines for a file, return the
+ * closest valid line, or undefined if none exist.
+ */
+export function snapToValidLine(target: number, validLines: Set<number>): number | undefined {
+  if (validLines.has(target)) return target;
+  let best: number | undefined;
+  let bestDist = Infinity;
+  for (const v of validLines) {
+    const d = Math.abs(v - target);
+    if (d < bestDist) { bestDist = d; best = v; }
+  }
+  return best;
 }
 
 export async function getPullDiff(owner: string, repo: string, number: number) {

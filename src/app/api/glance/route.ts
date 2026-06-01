@@ -47,6 +47,8 @@ export async function POST(req: NextRequest) {
             number,
             title: detail.title,
             model: result.model,
+            summary: result.summary,
+            walkthrough: result.walkthrough,
             markdown: result.markdown,
         });
     } catch (e) {

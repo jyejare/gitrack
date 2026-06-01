@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { insightsPullWithClaude } from "@/lib/anthropic";
 import { insightsPullWithGroq } from "@/lib/groq";
 import { insightsPullWithOllama } from "@/lib/ollama";
+import { insightsPullWithVertex } from "@/lib/vertex";
 import { getPullDetail, getPullDiff } from "@/lib/github";
 import { getLlmProvider } from "@/lib/llm";
 
@@ -44,7 +45,9 @@ export async function POST(req: NextRequest) {
         ? insightsPullWithGroq
         : provider === "ollama"
           ? insightsPullWithOllama
-          : insightsPullWithClaude;
+          : provider === "vertex"
+            ? insightsPullWithVertex
+            : insightsPullWithClaude;
     const result = await insightsFn(insightsArgs);
 
     return NextResponse.json({

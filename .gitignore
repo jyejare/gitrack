@@ -31,6 +31,9 @@ yarn-error.log*
 .env
 .env*.local
 
+# app data
+/.data
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
