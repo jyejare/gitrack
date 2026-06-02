@@ -7,10 +7,10 @@ import {
   listPullRequests,
   listPullReviews,
   parseLinkHeader,
-  searchPullRequests,
+  type PullListItem,
 } from "@/lib/github";
 import { computeReadiness, summarizeChecks } from "@/lib/readiness";
-import { withSessionOverrides } from "@/lib/session";
+import { withSessionOverrides, UnauthenticatedError } from "@/lib/session";
 
 export const runtime = "nodejs";
 
@@ -88,18 +88,37 @@ export async function GET(req: NextRequest) {
     return await withSessionOverrides(req, async () => {
       if (search) {
         const prNum = Number(search);
-        let prNumbers: number[];
         if (Number.isFinite(prNum) && prNum > 0 && String(prNum) === search) {
-          prNumbers = [prNum];
-        } else {
-          prNumbers = await searchPullRequests(owner, repo, search, state);
+          const enriched = await enrichPull(owner, repo, prNum).catch(() => null);
+          return NextResponse.json({
+            pulls: enriched ? [enriched] : [],
+            pagination: { page: 1, perPage: 1, nextPage: null, lastPage: 1, hasMore: false },
+          });
         }
+
+        const searchLower = search.toLowerCase();
+        const allPulls: PullListItem[] = [];
+        let pg = 1;
+        while (allPulls.length < 100) {
+          const { pulls: batch } = await listPullRequests(owner, repo, { state, page: pg, perPage: 30 });
+          if (batch.length === 0) break;
+          allPulls.push(...batch);
+          if (batch.length < 30) break;
+          pg++;
+        }
+
+        const matched = allPulls.filter((p) =>
+          p.title.toLowerCase().includes(searchLower) ||
+          p.user?.login.toLowerCase().includes(searchLower) ||
+          p.head.ref.toLowerCase().includes(searchLower)
+        );
+
         const enriched = await Promise.all(
-          prNumbers.map((n) => enrichPull(owner, repo, n).catch(() => null)),
+          matched.slice(0, 20).map((p) => enrichPull(owner, repo, p.number).catch(() => null)),
         );
         return NextResponse.json({
           pulls: enriched.filter(Boolean),
-          pagination: { page: 1, perPage: prNumbers.length, nextPage: null, lastPage: 1, hasMore: false },
+          pagination: { page: 1, perPage: matched.length, nextPage: null, lastPage: 1, hasMore: false },
         });
       }
 
@@ -121,6 +140,9 @@ export async function GET(req: NextRequest) {
       });
     });
   } catch (e) {
+    if (e instanceof UnauthenticatedError) {
+      return NextResponse.json({ error: e.message }, { status: 401 });
+    }
     const message = e instanceof Error ? e.message : "Unknown error";
     return NextResponse.json({ error: message }, { status: 500 });
   }

@@ -67,8 +67,10 @@ export async function searchPullRequests(
   query: string,
   state: "open" | "closed" | "all",
 ) {
-  const stateFilter = state === "all" ? "" : `+is:${state}`;
-  const q = encodeURIComponent(`repo:${owner}/${repo} is:pr${stateFilter} ${query}`);
+  const parts = [`repo:${owner}/${repo}`, "is:pr"];
+  if (state !== "all") parts.push(`is:${state}`);
+  parts.push(`${query} in:title`);
+  const q = encodeURIComponent(parts.join(" "));
   const res = await githubFetch(`/search/issues?q=${q}&per_page=20&sort=updated&order=desc`);
   const json = (await res.json()) as {
     items: Array<{ number: number; pull_request?: { url: string } }>;
@@ -310,6 +312,44 @@ export function snapToValidLine(target: number, validLines: Set<number>): number
     if (d < bestDist) { bestDist = d; best = v; }
   }
   return best;
+}
+
+export type Collaborator = {
+  login: string;
+  avatar_url: string;
+  permissions?: { admin: boolean; push: boolean; pull: boolean };
+};
+
+export async function listCollaborators(owner: string, repo: string): Promise<Collaborator[]> {
+  const all: Collaborator[] = [];
+  let page = 1;
+  while (true) {
+    const res = await githubFetch(
+      `/repos/${owner}/${repo}/collaborators?per_page=100&page=${page}`,
+    );
+    const batch = (await res.json()) as Collaborator[];
+    all.push(...batch);
+    if (batch.length < 100) break;
+    page++;
+  }
+  return all;
+}
+
+export async function requestReviewers(
+  owner: string,
+  repo: string,
+  number: number,
+  reviewers: string[],
+): Promise<{ requested_reviewers: { login: string }[] }> {
+  const res = await githubFetch(
+    `/repos/${owner}/${repo}/pulls/${number}/requested_reviewers`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reviewers }),
+    },
+  );
+  return (await res.json()) as { requested_reviewers: { login: string }[] };
 }
 
 export async function getPullDiff(owner: string, repo: string, number: number) {

@@ -10,6 +10,7 @@ Next.js app for **engineering org visibility** into pull requests: **merge readi
 - **At a glance** — AI-generated panel highlighting the key code changes with file paths, line numbers, and diff snippets
 - **Review Guide** — AI-generated checklist, risk hotspots, and testing suggestions with color-coded sections
 - **Full AI Review** — on-demand detailed PR review via the configured LLM
+- **PR auto-assignment** — rule-based reviewer assignment by PR size (XS–XXL) and title keywords; configured per repo in Settings
 - **Cross-repo search** — search by PR number or title text across all pages (uses GitHub Search API)
 - **Light / Dark mode** — toggle between themes; persists preference
 - **AI Mode** — toggle AI features on/off from the header
@@ -155,7 +156,7 @@ giTrack securely writes the SA key to a temporary file on the server for the dur
 
 - OpenShift cluster with `oc` CLI authenticated
 - A project/namespace created (e.g. `oc new-project gitrack`)
-- Cluster permissions to create BuildConfigs, Deployments, Routes, PVCs, and Secrets
+- Cluster permissions to create Deployments, Routes, PVCs, and Secrets
 
 ### 1. Create the namespace and apply manifests
 
@@ -190,29 +191,30 @@ Key fields to set:
 
 The `GITHUB_TOKEN` field can be left empty — each user provides their own PAT when signing in. Similarly, LLM keys set in the secret serve as defaults; individual users can override them in their Settings page.
 
-### 3. Create a BuildConfig and build the image
+### 3. Container image
+
+The deployment manifest is pre-configured to use the Quay.io image:
+
+```
+quay.io/jyejare_redhat/gitrack:latest
+```
+
+This is the recommended approach — no BuildConfig or internal registry setup required. Simply apply the manifests and the deployment will pull the image from Quay.
+
+#### Alternative: Build your own image
+
+If you need a custom build (e.g. local patches or a private fork), you can use an OpenShift binary build instead:
 
 ```bash
 oc new-build --binary --strategy=docker --name=gitrack
-
-# Build from local source
 oc start-build gitrack --from-dir=. --follow
-```
 
-### 4. Point the Deployment to the built image
-
-After the first build, update the Deployment image reference:
-
-```bash
-# Get the image stream URL
-oc get is gitrack -o jsonpath='{.status.dockerImageRepository}'
-
-# Patch the deployment (replace the placeholder " " image)
+# Point the deployment to the internal registry image
 oc set image deployment/gitrack \
   gitrack=$(oc get is gitrack -o jsonpath='{.status.dockerImageRepository}'):latest
 ```
 
-### 5. Verify the rollout
+### 4. Verify the rollout
 
 ```bash
 oc rollout status deployment/gitrack
@@ -221,7 +223,16 @@ oc get route gitrack -o jsonpath='https://{.spec.host}{"\n"}'
 
 Open the printed URL in your browser. Sign in with your GitHub PAT.
 
-### Updating after code changes
+### Updating
+
+When using the Quay image, redeployments happen automatically when a new image is pushed (due to `imagePullPolicy: Always`):
+
+```bash
+oc rollout restart deployment/gitrack
+oc rollout status deployment/gitrack
+```
+
+If using a custom build:
 
 ```bash
 oc start-build gitrack --from-dir=. --follow
@@ -264,6 +275,9 @@ oc rollout status deployment/gitrack
 | `POST` | `/api/insights` | Review Guide generation. Body: `{ owner, repo, number }` |
 | `POST` | `/api/glance` | At-a-glance code summary. Body: `{ owner, repo, number }` |
 | `GET` | `/api/metrics` | Repository metrics (merge time, review turnaround, PR sizes). Params: `owner`, `repo`, `days`. |
+| `GET` | `/api/team` | List repo collaborators. Params: `owner`, `repo`. |
+| `GET/POST/DELETE` | `/api/assignment-rules` | CRUD for per-repo PR auto-assignment rules. |
+| `POST` | `/api/assign` | Evaluate assignment rules against PRs. Body: `{ owner, repo, pulls[] }` |
 
 ## How checks work
 

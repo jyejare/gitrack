@@ -933,6 +933,7 @@ export function Dashboard() {
   const [priorityView, setPriorityView] = useState<PriorityView>("all");
   const [prioritySort, setPrioritySort] = useState<PrioritySort>("updatedDesc");
   const [search, setSearch] = useState("");
+  const [reviewerFilter, setReviewerFilter] = useState("");
 
   const [detailsOpenFor, setDetailsOpenFor] = useState<number | null>(null);
   const [glanceByPr, setGlanceByPr] = useState<Record<number, GlanceData>>({});
@@ -951,6 +952,9 @@ export function Dashboard() {
   const [reviewPrompt, setReviewPrompt] = useState("");
   const [submitLoading, setSubmitLoading] = useState(false);
   const [submitResult, setSubmitResult] = useState<{ success: boolean; url?: string; error?: string } | null>(null);
+
+  const [assignedReviewers, setAssignedReviewers] = useState<Record<number, string[]>>({});
+  const [teamMembers, setTeamMembers] = useState<Record<string, { login: string; avatar_url: string }>>({});
 
   const [savedRules, setSavedRules] = useState<Array<{ name: string; prompt: string }>>([]);
   const [savingRule, setSavingRule] = useState(false);
@@ -1044,9 +1048,59 @@ export function Dashboard() {
   useEffect(() => {
     const q = search.trim();
     if (!q || !canLoad) return;
+    setReviewerFilter("");
     const timer = setTimeout(() => void fetchPrs(1, q), 400);
     return () => clearTimeout(timer);
   }, [search, canLoad, fetchPrs]);
+
+  const fetchAssignments = useCallback(async (pulls: PullRow[]) => {
+    if (!canLoad || pulls.length === 0) return;
+    try {
+      const res = await fetch("/api/assign", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          owner: owner.trim(),
+          repo: repo.trim(),
+          pulls: pulls.map((p) => ({
+            number: p.number,
+            title: p.title,
+            author: p.author,
+            additions: p.additions,
+            deletions: p.deletions,
+          })),
+        }),
+      });
+      if (res.ok) {
+        const json = (await res.json()) as { assignments: Record<number, string[]> };
+        setAssignedReviewers(json.assignments ?? {});
+      }
+    } catch {
+      // Best-effort; don't block the UI
+    }
+  }, [canLoad, owner, repo]);
+
+  const fetchTeamMembers = useCallback(async () => {
+    if (!canLoad) return;
+    try {
+      const res = await fetch(`/api/team?owner=${encodeURIComponent(owner.trim())}&repo=${encodeURIComponent(repo.trim())}`);
+      if (res.ok) {
+        const json = (await res.json()) as { team: { login: string; avatar_url: string }[] };
+        const map: Record<string, { login: string; avatar_url: string }> = {};
+        for (const m of json.team) map[m.login] = m;
+        setTeamMembers(map);
+      }
+    } catch {
+      // Best-effort
+    }
+  }, [canLoad, owner, repo]);
+
+  useEffect(() => {
+    if (data?.pulls && canLoad) {
+      void fetchAssignments(data.pulls);
+      void fetchTeamMembers();
+    }
+  }, [data, canLoad, fetchAssignments, fetchTeamMembers]);
 
   const runReview = async (number: number) => {
     if (!canLoad || !aiMode) return;
@@ -1237,6 +1291,14 @@ export function Dashboard() {
     }
   }, [aiMode, detailsOpenFor, glanceByPr, insightsByPr, runGlance, runInsights]);
 
+  const availableReviewers = useMemo(() => {
+    const set = new Set<string>();
+    for (const logins of Object.values(assignedReviewers)) {
+      for (const login of logins) set.add(login);
+    }
+    return Array.from(set).sort();
+  }, [assignedReviewers]);
+
   const pullsForTable = useMemo(() => {
     const all = data?.pulls ?? [];
     let out = [...all];
@@ -1250,6 +1312,10 @@ export function Dashboard() {
         if (priorityView === "draft") return p.draft;
         return true;
       });
+    }
+
+    if (reviewerFilter) {
+      out = out.filter((p) => assignedReviewers[p.number]?.includes(reviewerFilter));
     }
 
     if (prioritySort === "updatedDesc") return out;
@@ -1276,7 +1342,7 @@ export function Dashboard() {
     // oldestUpdated
     out.sort((a, b) => Date.parse(a.updated_at) - Date.parse(b.updated_at));
     return out;
-  }, [data, prioritySort, priorityView]);
+  }, [data, prioritySort, priorityView, reviewerFilter, assignedReviewers]);
 
   const paginationLabel = useMemo(() => {
     if (!data) return "";
@@ -1501,7 +1567,7 @@ export function Dashboard() {
                     <button
                       type="button"
                       className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
-                      onClick={() => { setSearch(""); void fetchPrs(page); }}
+                      onClick={() => setSearch("")}
                       aria-label="Clear search"
                     >
                       ×
@@ -1539,6 +1605,22 @@ export function Dashboard() {
                   <option value="oldestUpdated">Oldest updated</option>
                 </select>
               </label>
+
+              {availableReviewers.length > 0 && (
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-500">Reviewer</span>
+                  <select
+                    className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none ring-emerald-500/40 focus:ring-2 dark:border-slate-700 dark:bg-slate-950"
+                    value={reviewerFilter}
+                    onChange={(e) => setReviewerFilter(e.target.value)}
+                  >
+                    <option value="">All reviewers</option>
+                    {availableReviewers.map((login) => (
+                      <option key={login} value={login}>{login}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
             </div>
 
             <div className="text-xs text-slate-500">
@@ -1740,15 +1822,39 @@ export function Dashboard() {
                         })()}
 
                         <td className="px-3 py-3">
-                          <button
-                            type="button"
-                            className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:hover:bg-slate-900"
-                            disabled={!aiMode || reviewLoadingFor === p.number}
-                            title={!aiMode ? "Enable AI mode to run AI review" : undefined}
-                            onClick={() => void runReview(p.number)}
-                          >
-                            {reviewLoadingFor === p.number ? "Reviewing…" : "AI Review"}
-                          </button>
+                          <div className="flex flex-col gap-2">
+                            <button
+                              type="button"
+                              className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:hover:bg-slate-900"
+                              disabled={!aiMode || reviewLoadingFor === p.number}
+                              title={!aiMode ? "Enable AI mode to run AI review" : undefined}
+                              onClick={() => void runReview(p.number)}
+                            >
+                              {reviewLoadingFor === p.number ? "Reviewing…" : "AI Review"}
+                            </button>
+                            {assignedReviewers[p.number]?.length > 0 && (
+                              <div className="flex flex-col gap-1">
+                                <span className="text-[10px] font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">Reviewers</span>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {assignedReviewers[p.number].map((login) => {
+                                    const member = teamMembers[login];
+                                    return (
+                                      <span key={login} className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300" title={login}>
+                                        {member?.avatar_url ? (
+                                          <img src={member.avatar_url} alt="" className="h-4 w-4 rounded-full" referrerPolicy="no-referrer" />
+                                        ) : (
+                                          <span className="flex h-4 w-4 items-center justify-center rounded-full bg-emerald-200 text-[9px] font-bold text-emerald-700 dark:bg-emerald-800 dark:text-emerald-200">
+                                            {login[0].toUpperCase()}
+                                          </span>
+                                        )}
+                                        {login}
+                                      </span>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+                          </div>
                         </td>
                       </tr>
 

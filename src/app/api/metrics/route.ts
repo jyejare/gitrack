@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { githubFetch } from "@/lib/github";
-import { withSessionOverrides } from "@/lib/session";
+import { withSessionOverrides, UnauthenticatedError } from "@/lib/session";
 
 export const runtime = "nodejs";
 
@@ -170,8 +170,11 @@ export async function GET(req: NextRequest) {
             sizeDistribution,
         });
     } catch (e) {
+        if (e instanceof UnauthenticatedError) {
+            return NextResponse.json({ error: e.message }, { status: 401 });
+        }
         const message = e instanceof Error ? e.message : "Unknown error";
         return NextResponse.json({ error: message }, { status: 500 });
     }
-    });
+});
 }
