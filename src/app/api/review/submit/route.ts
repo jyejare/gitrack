@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { submitPrReview, getPullDiff, parseDiffValidLines, snapToValidLine } from "@/lib/github";
+import { withSessionOverrides } from "@/lib/session";
 
 export const runtime = "nodejs";
 
@@ -42,9 +43,6 @@ function parseLine(raw?: string): { line?: number; start_line?: number } {
 function formatCommentBody(c: ReviewComment): string {
     const label = SEVERITY_EMOJI[c.severity] ?? "Comment";
     const lines: string[] = [`**[${label}] ${c.title}**`, "", c.body];
-    if (c.existing_code) {
-        lines.push("", "**Current code:**", "```diff", c.existing_code, "```");
-    }
     if (c.suggested_code) {
         lines.push("", "**Suggested:**", "```suggestion", c.suggested_code, "```");
     }
@@ -98,43 +96,46 @@ export async function POST(req: NextRequest) {
         }
 
         const event = VERDICT_TO_EVENT[body.verdict ?? "comment"] ?? "COMMENT";
+        const comments = body.comments;
 
-        const diff = await getPullDiff(owner, repo, number);
-        const validLines = parseDiffValidLines(diff);
+        const result = await withSessionOverrides(req, async () => {
+            const diff = await getPullDiff(owner, repo, number);
+            const validLines = parseDiffValidLines(diff);
 
-        const inlineComments: { path: string; body: string; line: number; start_line?: number }[] = [];
-        const orphanedComments: { path: string; body: string }[] = [];
+            const inlineComments: { path: string; body: string; line: number; start_line?: number }[] = [];
+            const orphanedComments: { path: string; body: string }[] = [];
 
-        for (const c of body.comments) {
-            const { line, start_line } = parseLine(c.line);
-            const fileLines = validLines.get(c.file);
+            for (const c of comments) {
+                const { line, start_line } = parseLine(c.line);
+                const fileLines = validLines.get(c.file);
 
-            if (line && fileLines && fileLines.size > 0) {
-                const snapped = snapToValidLine(line, fileLines);
-                if (snapped) {
-                    const entry: { path: string; body: string; line: number; start_line?: number } = {
-                        path: c.file,
-                        body: formatCommentBody(c),
-                        line: snapped,
-                    };
-                    if (start_line) {
-                        const snappedStart = snapToValidLine(start_line, fileLines);
-                        if (snappedStart && snappedStart < snapped) {
-                            entry.start_line = snappedStart;
+                if (line && fileLines && fileLines.size > 0) {
+                    const snapped = snapToValidLine(line, fileLines);
+                    if (snapped) {
+                        const entry: { path: string; body: string; line: number; start_line?: number } = {
+                            path: c.file,
+                            body: formatCommentBody(c),
+                            line: snapped,
+                        };
+                        if (start_line) {
+                            const snappedStart = snapToValidLine(start_line, fileLines);
+                            if (snappedStart && snappedStart < snapped) {
+                                entry.start_line = snappedStart;
+                            }
                         }
+                        inlineComments.push(entry);
+                        continue;
                     }
-                    inlineComments.push(entry);
-                    continue;
                 }
+
+                orphanedComments.push({ path: c.file, body: formatOrphanBody(c) });
             }
 
-            orphanedComments.push({ path: c.file, body: formatOrphanBody(c) });
-        }
-
-        const result = await submitPrReview(owner, repo, number, {
-            event,
-            body: body.summary,
-            comments: [...inlineComments, ...orphanedComments],
+            return submitPrReview(owner, repo, number, {
+                event,
+                body: body.summary!,
+                comments: [...inlineComments, ...orphanedComments],
+            });
         });
 
         return NextResponse.json({

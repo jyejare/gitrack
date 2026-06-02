@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitrack
+  labels:
+    app: gitrack
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gitrack
+  template:
+    metadata:
+      labels:
+        app: gitrack
+    spec:
+      containers:
+        - name: gitrack
+          image: " "
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+              protocol: TCP
+          envFrom:
+            - secretRef:
+                name: gitrack-config
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          volumeMounts:
+            - name: data
+              mountPath: /app/.data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: gitrack-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gitrack-data
+  labels:
+    app: gitrack
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

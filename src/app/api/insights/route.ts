@@ -5,6 +5,7 @@ import { insightsPullWithOllama } from "@/lib/ollama";
 import { insightsPullWithVertex } from "@/lib/vertex";
 import { getPullDetail, getPullDiff } from "@/lib/github";
 import { getLlmProvider } from "@/lib/llm";
+import { withSessionOverrides } from "@/lib/session";
 
 export const runtime = "nodejs";
 
@@ -35,26 +36,28 @@ export async function POST(req: NextRequest) {
         ? Math.min(body.maxDiffChars, 250_000)
         : DEFAULT_MAX_DIFF;
 
-    const detail = await getPullDetail(owner, repo, number);
-    const diff = await getPullDiff(owner, repo, number);
-
-    const provider = getLlmProvider();
-    const insightsArgs = { owner, repo, number, title: detail.title, diff, maxDiffChars };
-    const insightsFn =
-      provider === "groq"
-        ? insightsPullWithGroq
-        : provider === "ollama"
-          ? insightsPullWithOllama
-          : provider === "vertex"
-            ? insightsPullWithVertex
-            : insightsPullWithClaude;
-    const result = await insightsFn(insightsArgs);
+    const responseData = await withSessionOverrides(req, async () => {
+      const detail = await getPullDetail(owner, repo, number);
+      const diff = await getPullDiff(owner, repo, number);
+      const provider = getLlmProvider();
+      const insightsArgs = { owner, repo, number, title: detail.title, diff, maxDiffChars };
+      const insightsFn =
+        provider === "groq"
+          ? insightsPullWithGroq
+          : provider === "ollama"
+            ? insightsPullWithOllama
+            : provider === "vertex"
+              ? insightsPullWithVertex
+              : insightsPullWithClaude;
+      const result = await insightsFn(insightsArgs);
+      return { title: detail.title, model: result.model, markdown: result.markdown };
+    });
 
     return NextResponse.json({
       number,
-      title: detail.title,
-      model: result.model,
-      markdown: result.markdown,
+      title: responseData.title,
+      model: responseData.model,
+      markdown: responseData.markdown,
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : "Unknown error";

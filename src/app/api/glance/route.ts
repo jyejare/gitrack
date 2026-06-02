@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { glancePull } from "@/lib/glance";
 import { getPullDetail, getPullDiff } from "@/lib/github";
+import { withSessionOverrides } from "@/lib/session";
 
 export const runtime = "nodejs";
 
@@ -31,16 +32,15 @@ export async function POST(req: NextRequest) {
                 ? Math.min(body.maxDiffChars, 250_000)
                 : DEFAULT_MAX_DIFF;
 
-        const detail = await getPullDetail(owner, repo, number);
-        const diff = await getPullDiff(owner, repo, number);
-
-        const result = await glancePull({
-            owner,
-            repo,
-            number,
-            title: detail.title,
-            diff,
-            maxDiffChars,
+        const { detail, result } = await withSessionOverrides(req, async () => {
+            const detail = await getPullDetail(owner, repo, number);
+            const diff = await getPullDiff(owner, repo, number);
+            const result = await glancePull({
+                owner, repo, number,
+                title: detail.title,
+                diff, maxDiffChars,
+            });
+            return { detail, result };
         });
 
         return NextResponse.json({

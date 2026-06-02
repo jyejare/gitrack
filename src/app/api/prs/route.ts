@@ -10,6 +10,7 @@ import {
   searchPullRequests,
 } from "@/lib/github";
 import { computeReadiness, summarizeChecks } from "@/lib/readiness";
+import { withSessionOverrides } from "@/lib/session";
 
 export const runtime = "nodejs";
 
@@ -84,38 +85,40 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "owner and repo are required" }, { status: 400 });
     }
 
-    if (search) {
-      const prNum = Number(search);
-      let prNumbers: number[];
-      if (Number.isFinite(prNum) && prNum > 0 && String(prNum) === search) {
-        prNumbers = [prNum];
-      } else {
-        prNumbers = await searchPullRequests(owner, repo, search, state);
+    return await withSessionOverrides(req, async () => {
+      if (search) {
+        const prNum = Number(search);
+        let prNumbers: number[];
+        if (Number.isFinite(prNum) && prNum > 0 && String(prNum) === search) {
+          prNumbers = [prNum];
+        } else {
+          prNumbers = await searchPullRequests(owner, repo, search, state);
+        }
+        const enriched = await Promise.all(
+          prNumbers.map((n) => enrichPull(owner, repo, n).catch(() => null)),
+        );
+        return NextResponse.json({
+          pulls: enriched.filter(Boolean),
+          pagination: { page: 1, perPage: prNumbers.length, nextPage: null, lastPage: 1, hasMore: false },
+        });
       }
+
+      const { pulls, link } = await listPullRequests(owner, repo, { state, page, perPage });
+      const pages = parseLinkHeader(link);
       const enriched = await Promise.all(
-        prNumbers.map((n) => enrichPull(owner, repo, n).catch(() => null)),
+        pulls.map((p) => enrichPull(owner, repo, p.number)),
       );
+
       return NextResponse.json({
-        pulls: enriched.filter(Boolean),
-        pagination: { page: 1, perPage: prNumbers.length, nextPage: null, lastPage: 1, hasMore: false },
+        pulls: enriched,
+        pagination: {
+          page,
+          perPage,
+          nextPage: pages.next ?? null,
+          lastPage: pages.last ?? null,
+          hasMore: pages.next !== undefined,
+        },
       });
-    }
-
-    const { pulls, link } = await listPullRequests(owner, repo, { state, page, perPage });
-    const pages = parseLinkHeader(link);
-    const enriched = await Promise.all(
-      pulls.map((p) => enrichPull(owner, repo, p.number)),
-    );
-
-    return NextResponse.json({
-      pulls: enriched,
-      pagination: {
-        page,
-        perPage,
-        nextPage: pages.next ?? null,
-        lastPage: pages.last ?? null,
-        hasMore: pages.next !== undefined,
-      },
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : "Unknown error";

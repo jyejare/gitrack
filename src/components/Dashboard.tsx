@@ -2,7 +2,11 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useAiMode } from "@/components/AiModeContext";
-import { useAdvancedUi } from "@/components/AdvancedUiContext";
+import { useMetrics } from "@/components/MetricsContext";
+
+function getSessionHeaders(): Record<string, string> {
+    return {};
+}
 
 type ReviewItem = {
   id: number;
@@ -765,6 +769,157 @@ function summarizeReviews(reviews: ReviewItem[]) {
   return { approved, changes, commented, participants: latestByUser.size };
 }
 
+// ---------- Metrics Panel ----------
+
+type MetricsData = {
+  period: { days: number; since: string };
+  counts: { totalOpen: number; mergedInPeriod: number; closedInPeriod: number; createdInPeriod: number };
+  averages: { mergeTimeHours: number; openAgeDays: number };
+  throughput: Array<{ week: string; opened: number; merged: number }>;
+  sizeDistribution: Array<{ size: string; count: number }>;
+};
+
+function MetricsPanel({ owner, repo }: { owner: string; repo: string }) {
+  const [metricsData, setMetricsData] = useState<MetricsData | null>(null);
+  const [metricsLoading, setMetricsLoading] = useState(false);
+  const [metricsError, setMetricsError] = useState<string | null>(null);
+  const [days, setDays] = useState(30);
+
+  const fetchMetrics = useCallback(async () => {
+    if (!owner || !repo) return;
+    setMetricsLoading(true);
+    setMetricsError(null);
+    try {
+      const res = await fetch(`/api/metrics?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}&days=${days}`);
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? `Failed to load metrics (${res.status})`);
+      setMetricsData(json as MetricsData);
+    } catch (e) {
+      setMetricsError(e instanceof Error ? e.message : "Failed to load metrics");
+    } finally {
+      setMetricsLoading(false);
+    }
+  }, [owner, repo, days]);
+
+  useEffect(() => {
+    void fetchMetrics();
+  }, [fetchMetrics]);
+
+  if (metricsLoading) {
+    return (
+      <div className="rounded-xl border border-violet-200 bg-violet-50/30 p-6 text-center dark:border-violet-800/60 dark:bg-violet-950/20">
+        <p className="text-sm text-slate-500">Loading metrics…</p>
+      </div>
+    );
+  }
+
+  if (metricsError) {
+    return (
+      <div className="rounded-xl border border-rose-300 bg-rose-50 p-4 dark:border-rose-900/60 dark:bg-rose-950/40">
+        <p className="text-sm text-rose-800 dark:text-rose-200">{metricsError}</p>
+        <button type="button" className="mt-2 text-xs font-medium text-rose-600 underline hover:text-rose-500" onClick={() => void fetchMetrics()}>Retry</button>
+      </div>
+    );
+  }
+
+  if (!metricsData) return null;
+
+  const d = metricsData;
+  const maxThroughput = Math.max(...d.throughput.flatMap((w) => [w.opened, w.merged]), 1);
+  const totalSize = d.sizeDistribution.reduce((s, b) => s + b.count, 0) || 1;
+
+  const cards = [
+    { label: "Open PRs", value: String(d.counts.totalOpen), tone: "text-slate-900 dark:text-slate-100" },
+    { label: `Created (${days}d)`, value: String(d.counts.createdInPeriod), tone: "text-blue-700 dark:text-blue-300" },
+    { label: `Merged (${days}d)`, value: String(d.counts.mergedInPeriod), tone: "text-emerald-700 dark:text-emerald-300" },
+    { label: "Avg Merge Time", value: d.averages.mergeTimeHours < 24 ? `${d.averages.mergeTimeHours}h` : `${Math.round(d.averages.mergeTimeHours / 24)}d`, tone: "text-violet-700 dark:text-violet-300" },
+    { label: "Avg Open Age", value: `${d.averages.openAgeDays}d`, tone: d.averages.openAgeDays > 14 ? "text-amber-700 dark:text-amber-300" : "text-slate-700 dark:text-slate-300" },
+  ];
+
+  const SIZE_COLORS: Record<string, string> = {
+    XS: "bg-emerald-500",
+    S: "bg-green-500",
+    M: "bg-amber-500",
+    L: "bg-orange-500",
+    XL: "bg-rose-500",
+  };
+
+  return (
+    <div className="flex flex-col gap-4 rounded-xl border border-violet-200 bg-violet-50/20 p-4 dark:border-violet-800/50 dark:bg-violet-950/10">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-bold uppercase tracking-wide text-violet-700 dark:text-violet-300">Repository Metrics</h3>
+        <div className="flex items-center gap-2">
+          <select
+            className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs outline-none ring-violet-500/40 focus:ring-2 dark:border-slate-700 dark:bg-slate-950"
+            value={days}
+            onChange={(e) => setDays(Number(e.target.value))}
+          >
+            <option value={7}>7 days</option>
+            <option value={14}>14 days</option>
+            <option value={30}>30 days</option>
+            <option value={60}>60 days</option>
+            <option value={90}>90 days</option>
+          </select>
+          <button type="button" className="text-xs font-medium text-violet-600 hover:underline dark:text-violet-400" onClick={() => void fetchMetrics()}>Refresh</button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-5 gap-3">
+        {cards.map((c) => (
+          <div key={c.label} className="flex flex-col items-center rounded-xl border border-slate-200 bg-white/80 px-3 py-4 dark:border-slate-800 dark:bg-slate-900/50">
+            <span className={`text-2xl font-bold ${c.tone}`}>{c.value}</span>
+            <span className="mt-1 text-center text-[10px] font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">{c.label}</span>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2">
+        {/* Throughput chart */}
+        <div className="rounded-lg border border-slate-200 bg-white/60 p-3 dark:border-slate-800 dark:bg-slate-950/40">
+          <h4 className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Weekly Throughput</h4>
+          {d.throughput.length > 0 ? (
+            <div className="flex items-end gap-1" style={{ height: 100 }}>
+              {d.throughput.map((w) => (
+                <div key={w.week} className="flex flex-1 flex-col items-center gap-0.5">
+                  <div className="flex w-full items-end justify-center gap-px" style={{ height: 80 }}>
+                    <div className="w-2 rounded-t bg-blue-400 dark:bg-blue-500" style={{ height: `${(w.opened / maxThroughput) * 100}%`, minHeight: w.opened > 0 ? 4 : 0 }} title={`Opened: ${w.opened}`} />
+                    <div className="w-2 rounded-t bg-emerald-400 dark:bg-emerald-500" style={{ height: `${(w.merged / maxThroughput) * 100}%`, minHeight: w.merged > 0 ? 4 : 0 }} title={`Merged: ${w.merged}`} />
+                  </div>
+                  <span className="text-[8px] text-slate-400">{w.week.slice(5)}</span>
+                </div>
+              ))}
+            </div>
+          ) : <p className="text-xs text-slate-400">No data</p>}
+          <div className="mt-2 flex items-center gap-3 text-[9px] text-slate-400">
+            <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm bg-blue-400" /> Opened</span>
+            <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm bg-emerald-400" /> Merged</span>
+          </div>
+        </div>
+
+        {/* Size distribution */}
+        <div className="rounded-lg border border-slate-200 bg-white/60 p-3 dark:border-slate-800 dark:bg-slate-950/40">
+          <h4 className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">PR Size Distribution</h4>
+          <div className="flex flex-col gap-1.5">
+            {d.sizeDistribution.map((b) => (
+              <div key={b.size} className="flex items-center gap-2">
+                <span className="w-8 text-xs font-semibold text-slate-600 dark:text-slate-400">{b.size}</span>
+                <div className="flex-1">
+                  <div className="h-3 rounded-full bg-slate-200 dark:bg-slate-800">
+                    <div className={`h-3 rounded-full ${SIZE_COLORS[b.size] ?? "bg-slate-400"}`} style={{ width: `${(b.count / totalSize) * 100}%` }} />
+                  </div>
+                </div>
+                <span className="w-10 text-right text-[10px] text-slate-500">{b.count} ({Math.round((b.count / totalSize) * 100)}%)</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Dashboard ----------
+
 export function Dashboard() {
   const [owner, setOwner] = useState("");
   const [repo, setRepo] = useState("");
@@ -773,7 +928,7 @@ export function Dashboard() {
   const [page, setPage] = useState(1);
 
   const { aiMode } = useAiMode();
-  const { advancedUi } = useAdvancedUi();
+  const { metrics: metricsMode } = useMetrics();
 
   const [priorityView, setPriorityView] = useState<PriorityView>("all");
   const [prioritySort, setPrioritySort] = useState<PrioritySort>("updatedDesc");
@@ -790,7 +945,7 @@ export function Dashboard() {
   const [error, setError] = useState<string | null>(null);
 
   const [reviewOpenFor, setReviewOpenFor] = useState<number | null>(null);
-  const [reviewLoading, setReviewLoading] = useState(false);
+  const [reviewLoadingFor, setReviewLoadingFor] = useState<number | null>(null);
   const [reviewError, setReviewError] = useState<string | null>(null);
   const [reviewData, setReviewData] = useState<ReviewData | null>(null);
   const [reviewPrompt, setReviewPrompt] = useState("");
@@ -865,7 +1020,7 @@ export function Dashboard() {
           state,
         });
         if (searchQuery) q.set("search", searchQuery);
-        const res = await fetch(`/api/prs?${q.toString()}`);
+        const res = await fetch(`/api/prs?${q.toString()}`, { headers: getSessionHeaders() });
         const json = (await res.json()) as PrsResponse & { error?: string };
         if (!res.ok) {
           throw new Error(json.error ?? `Request failed (${res.status})`);
@@ -896,7 +1051,7 @@ export function Dashboard() {
   const runReview = async (number: number) => {
     if (!canLoad || !aiMode) return;
     setReviewOpenFor(number);
-    setReviewLoading(true);
+    setReviewLoadingFor(number);
     setReviewError(null);
     setReviewData(null);
     setSubmitResult(null);
@@ -905,9 +1060,13 @@ export function Dashboard() {
       if (reviewPrompt.trim()) payload.customPrompt = reviewPrompt.trim();
       const res = await fetch("/api/review", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...getSessionHeaders() },
         body: JSON.stringify(payload),
       });
+      const contentType = res.headers.get("content-type") ?? "";
+      if (!contentType.includes("application/json")) {
+        throw new Error(`Failed to get review response (${res.status}) — server returned non-JSON (possible timeout)`);
+      }
       const json = (await res.json()) as {
         summary?: string;
         verdict?: string;
@@ -929,7 +1088,7 @@ export function Dashboard() {
     } catch (e) {
       setReviewError(e instanceof Error ? e.message : "Review failed");
     } finally {
-      setReviewLoading(false);
+      setReviewLoadingFor(null);
     }
   };
 
@@ -940,7 +1099,7 @@ export function Dashboard() {
     try {
       const res = await fetch("/api/review/submit", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...getSessionHeaders() },
         body: JSON.stringify({
           owner: owner.trim(),
           repo: repo.trim(),
@@ -1011,7 +1170,7 @@ export function Dashboard() {
       try {
         const res = await fetch("/api/glance", {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: { "content-type": "application/json", ...getSessionHeaders() },
           body: JSON.stringify({ owner: owner.trim(), repo: repo.trim(), number }),
         });
         const json = (await res.json()) as {
@@ -1047,7 +1206,7 @@ export function Dashboard() {
       try {
         const res = await fetch("/api/insights", {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: { "content-type": "application/json", ...getSessionHeaders() },
           body: JSON.stringify({ owner: owner.trim(), repo: repo.trim(), number }),
         });
         const json = (await res.json()) as { markdown?: string; error?: string };
@@ -1199,7 +1358,7 @@ export function Dashboard() {
           <button
             type="button"
             className="rounded-md border border-amber-600 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-800 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-100 dark:hover:bg-amber-950/70"
-            disabled={!canLoad || !data?.pulls.length || reviewLoading || !aiMode}
+            disabled={!canLoad || !data?.pulls.length || reviewLoadingFor !== null || !aiMode}
             onClick={() => void reviewAllOnPage()}
             title="Runs reviews sequentially; the panel will show only the last PR in the batch (v1 limitation)."
           >
@@ -1387,196 +1546,8 @@ export function Dashboard() {
             </div>
           </div>
 
-          {advancedUi ? (
-            <>
-              {/* KPI summary cards */}
-              {(() => {
-                const pulls = data.pulls;
-                const total = pulls.length;
-                const avgScore = total > 0 ? Math.round(pulls.reduce((s, p) => s + p.readiness.score, 0) / total) : 0;
-                const readyCount = pulls.filter((p) => isReviewReady(p)).length;
-                const ciFailCount = pulls.filter((p) => p.checks.failing > 0).length;
-                const staleCount = pulls.filter((p) => (Date.now() - Date.parse(p.created_at)) / (1000 * 60 * 60 * 24) > 14).length;
-                const cards: { value: string; label: string; sub?: string; tone: string }[] = [
-                  { value: String(total), label: "Total PRs", tone: "text-slate-900 dark:text-slate-100" },
-                  { value: String(avgScore), label: "Avg Score", tone: scoreTone(avgScore) },
-                  { value: `${readyCount}/${total}`, label: "Review Ready", sub: `${readyCount} of ${total}`, tone: readyCount > 0 ? "text-emerald-700 dark:text-emerald-300" : "text-slate-500" },
-                  { value: String(ciFailCount), label: "CI Failing", tone: ciFailCount > 0 ? "text-rose-700 dark:text-rose-300" : "text-emerald-700 dark:text-emerald-300" },
-                  { value: String(staleCount), label: "Stale (>14d)", tone: staleCount > 0 ? "text-amber-700 dark:text-amber-300" : "text-emerald-700 dark:text-emerald-300" },
-                ];
-                return (
-                  <div className="grid grid-cols-5 gap-3">
-                    {cards.map((c) => (
-                      <div
-                        key={c.label}
-                        className="flex flex-col items-center rounded-xl border border-slate-200 bg-white/80 px-3 py-4 dark:border-slate-800 dark:bg-slate-900/50"
-                      >
-                        <span className={`text-2xl font-bold ${c.tone}`}>{c.value}</span>
-                        <span className="mt-1 text-[10px] font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">{c.label}</span>
-                        {c.sub ? <span className="text-[10px] text-slate-400 dark:text-slate-500">{c.sub}</span> : null}
-                      </div>
-                    ))}
-                  </div>
-                );
-              })()}
+          {metricsMode ? <MetricsPanel owner={owner.trim()} repo={repo.trim()} /> : null}
 
-              {/* Simplified table */}
-              <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
-                <table className="min-w-full divide-y divide-slate-200 text-left text-sm dark:divide-slate-800">
-                  <thead className="bg-slate-100/80 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-900/60">
-                    <tr>
-                      <th className="px-3 py-2">PR</th>
-                      <th className="px-3 py-2">Score</th>
-                      <th className="px-3 py-2">Status</th>
-                      <th className="px-3 py-2">Size</th>
-                      <th className="px-3 py-2">Activity</th>
-                      <th className="px-3 py-2">Review</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200 bg-white/60 dark:divide-slate-800 dark:bg-slate-950/40">
-                    {pullsForTable.map((p) => {
-                      const expanded = detailsOpenFor === p.number;
-                      const gl = glanceByPr[p.number];
-                      const ins = insightsByPr[p.number];
-                      const badge = prStatusBadge(p);
-                      const sz = prSize(p.additions, p.deletions);
-                      const age = timeAgo(p.created_at);
-                      const activity = timeAgo(p.last_activity_at);
-
-                      return (
-                        <Fragment key={p.number}>
-                          <tr className="align-top">
-                            <td className="px-3 py-3">
-                              <div className="flex items-start gap-2">
-                                <button
-                                  type="button"
-                                  className="rounded p-1 hover:bg-slate-100 disabled:opacity-40 dark:hover:bg-slate-900"
-                                  aria-label={`Toggle details for PR #${p.number}`}
-                                  aria-expanded={expanded}
-                                  onClick={() => setDetailsOpenFor(expanded ? null : p.number)}
-                                >
-                                  <span
-                                    className="inline-block text-slate-400 transition-transform"
-                                    style={{ transform: expanded ? "rotate(90deg)" : "rotate(0deg)" }}
-                                  >
-                                    ▸
-                                  </span>
-                                </button>
-                                <div className="min-w-0">
-                                  <a
-                                    href={`https://github.com/${owner}/${repo}/pull/${p.number}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="font-medium text-slate-900 hover:text-emerald-700 hover:underline dark:text-slate-100 dark:hover:text-emerald-400"
-                                  >#{p.number}</a>
-                                  <div className="max-w-xs text-xs text-slate-600 dark:text-slate-400">{p.title}</div>
-                                  <div className="mt-1 text-[11px] text-slate-500">{p.author}</div>
-                                </div>
-                              </div>
-                            </td>
-                            <td className="px-3 py-3 text-center">
-                              <span className={`text-2xl font-bold ${scoreTone(p.readiness.score)}`}>{p.readiness.score}</span>
-                            </td>
-                            <td className="px-3 py-3">
-                              <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium ${badge.cls}`}>{badge.label}</span>
-                            </td>
-                            <td className="px-3 py-3">
-                              <div className="flex flex-col items-start gap-1">
-                                <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold ${sz.color}`}>{sz.label}</span>
-                                <span className="text-[11px] text-slate-500">
-                                  <span className="text-emerald-700 dark:text-emerald-400">+{p.additions}</span>{" "}
-                                  <span className="text-rose-700 dark:text-rose-400">-{p.deletions}</span>
-                                </span>
-                              </div>
-                            </td>
-                            <td className="px-3 py-3 text-xs text-slate-600 dark:text-slate-300">
-                              <div title={age.title}>
-                                <span className="text-slate-400 dark:text-slate-500">opened </span>
-                                <span className={ageBadgeColor(p.created_at)}>{age.text}</span>
-                              </div>
-                              <div title={activity.title} className="mt-0.5">
-                                <span className="text-slate-400 dark:text-slate-500">active </span>
-                                <span className={p.last_activity_at ? "text-slate-600 dark:text-slate-300" : "text-slate-400 dark:text-slate-500"}>{activity.text}</span>
-                              </div>
-                            </td>
-                            <td className="px-3 py-3">
-                              <button
-                                type="button"
-                                className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:hover:bg-slate-900"
-                                disabled={!aiMode || reviewLoading}
-                                title={!aiMode ? "Enable AI mode to run AI review" : undefined}
-                                onClick={() => void runReview(p.number)}
-                              >
-                                AI Review
-                              </button>
-                            </td>
-                          </tr>
-
-                          {expanded ? (
-                            <tr>
-                              <td colSpan={6} className="px-3 py-3">
-                                <div className="rounded-xl border border-slate-200 bg-white/60 p-3 dark:border-slate-800 dark:bg-slate-950/40">
-                                  <div className="mb-3 flex flex-wrap items-center gap-4 text-xs text-slate-500 dark:text-slate-400">
-                                    <span className="font-medium text-slate-900 dark:text-slate-100">#{p.number}</span>
-                                    <span>Score <span className={scoreTone(p.readiness.score)}>{p.readiness.score}</span></span>
-                                    <span>Checks <span className="text-rose-700 dark:text-rose-300">{p.checks.failing}F</span> <span className="text-amber-700 dark:text-amber-200">{p.checks.pending}P</span> / {p.checks.total}</span>
-                                    <span>Approvals <span className="text-emerald-700 dark:text-emerald-300">{p.readiness.breakdown.approvals}</span></span>
-                                    <span>Comments {p.comments + p.review_comments}</span>
-                                  </div>
-                                  {aiMode ? (
-                                    <div className="grid gap-3 md:grid-cols-2">
-                                      <div className="rounded-lg border border-slate-200 bg-white/60 p-3 dark:border-slate-800 dark:bg-slate-950/40">
-                                        <div className="flex items-center justify-between gap-3">
-                                          <h3 className="bg-gradient-to-r from-emerald-500 via-cyan-500 to-emerald-500 bg-clip-text text-sm font-bold uppercase tracking-wide text-transparent dark:from-emerald-400 dark:via-cyan-300 dark:to-emerald-400">
-                                            At a glance
-                                          </h3>
-                                          {gl?.loading ? <span className="text-xs text-slate-400">Generating...</span> : null}
-                                        </div>
-                                        {gl?.error ? <p className="mt-2 rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-xs text-rose-800 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-100">{gl.error}</p> : null}
-                                        {gl?.summary || gl?.walkthrough?.length ? (
-                                          <GlanceView summary={gl.summary ?? ""} walkthrough={gl.walkthrough ?? []} />
-                                        ) : gl?.markdown ? (
-                                          <GlanceFallback markdown={gl.markdown} />
-                                        ) : null}
-                                        {!gl?.loading && !gl?.summary && !gl?.walkthrough?.length && !gl?.markdown && !gl?.error ? (
-                                          <div className="mt-2">
-                                            <button type="button" className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-40" onClick={() => void runGlance(p.number)}>Generate glance</button>
-                                            <p className="mt-1 text-[11px] text-slate-500">Key code changes from the diff.</p>
-                                          </div>
-                                        ) : null}
-                                      </div>
-                                      <div className="rounded-lg border border-slate-200 bg-white/60 p-3 dark:border-slate-800 dark:bg-slate-950/40">
-                                        <div className="flex items-center justify-between gap-3">
-                                          <h3 className="text-sm font-bold uppercase tracking-wide text-slate-700 dark:text-slate-300">Review Guide</h3>
-                                          {ins?.loading ? <span className="text-xs text-slate-400">Generating...</span> : null}
-                                        </div>
-                                        {ins?.error ? <p className="mt-2 rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-xs text-rose-800 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-100">{ins.error}</p> : null}
-                                        {ins?.markdown ? <InsightsView markdown={ins.markdown} /> : null}
-                                        {!ins?.loading && !ins?.markdown && !ins?.error ? (
-                                          <div className="mt-2">
-                                            <button type="button" className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-40" onClick={() => void runInsights(p.number)}>Generate guide</button>
-                                            <p className="mt-1 text-[11px] text-slate-500">Checklist, risks, and testing suggestions.</p>
-                                          </div>
-                                        ) : null}
-                                      </div>
-                                    </div>
-                                  ) : (
-                                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-950/30 dark:text-slate-400">
-                                      Enable AI mode to generate glance and reviewer insights for this PR.
-                                    </div>
-                                  )}
-                                </div>
-                              </td>
-                            </tr>
-                          ) : null}
-                        </Fragment>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          ) : (
           <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
             <table className="min-w-full divide-y divide-slate-200 text-left text-sm dark:divide-slate-800">
               <thead className="bg-slate-100/80 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-900/60">
@@ -1772,11 +1743,11 @@ export function Dashboard() {
                           <button
                             type="button"
                             className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:hover:bg-slate-900"
-                            disabled={!aiMode || reviewLoading}
+                            disabled={!aiMode || reviewLoadingFor === p.number}
                             title={!aiMode ? "Enable AI mode to run AI review" : undefined}
                             onClick={() => void runReview(p.number)}
                           >
-                            AI Review
+                            {reviewLoadingFor === p.number ? "Reviewing…" : "AI Review"}
                           </button>
                         </td>
                       </tr>
@@ -1903,7 +1874,6 @@ export function Dashboard() {
               </tbody>
             </table>
           </div>
-          )}
 
           <p className="text-xs text-slate-500">
             Changing per-page resets the selector to page 1; click Load PRs again if you want that slice
@@ -1963,7 +1933,7 @@ export function Dashboard() {
               </div>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto p-4 text-sm">
-              {reviewLoading ? <p className="text-slate-400">Generating review…</p> : null}
+              {reviewLoadingFor !== null ? <p className="text-slate-400">Generating review…</p> : null}
               {reviewError ? (
                 <p className="rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-rose-800 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-100">
                   {reviewError}
@@ -2016,6 +1986,31 @@ export function Dashboard() {
                 />
               ) : reviewData?.markdown ? (
                 <ReviewFallback markdown={reviewData.markdown} />
+              ) : null}
+
+              {/* Re-review */}
+              {reviewData && reviewLoadingFor === null ? (
+                <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50/60 p-3 dark:border-slate-800 dark:bg-slate-900/40">
+                  <div className="flex items-center gap-2">
+                    <textarea
+                      className="flex-1 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs outline-none ring-violet-500/40 placeholder:text-slate-400 focus:ring-2 dark:border-slate-700 dark:bg-slate-950 dark:placeholder:text-slate-600"
+                      rows={1}
+                      placeholder="Ask for re-review with specific focus, e.g. 'Focus on error handling' or 'Check security implications'..."
+                      value={reviewPrompt}
+                      onChange={(e) => setReviewPrompt(e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="shrink-0 rounded-md bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-500 disabled:opacity-40"
+                      disabled={reviewLoadingFor !== null}
+                      onClick={() => {
+                        if (reviewOpenFor !== null) void runReview(reviewOpenFor);
+                      }}
+                    >
+                      Re-review
+                    </button>
+                  </div>
+                </div>
               ) : null}
             </div>
           </div>

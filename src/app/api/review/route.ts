@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPullDetail, getPullDiff } from "@/lib/github";
 import { reviewPull } from "@/lib/review";
+import { withSessionOverrides } from "@/lib/session";
 
 export const runtime = "nodejs";
 
@@ -32,27 +33,29 @@ export async function POST(req: NextRequest) {
                 ? Math.min(body.maxDiffChars, 250_000)
                 : DEFAULT_MAX_DIFF;
 
-        const detail = await getPullDetail(owner, repo, number);
-        const diff = await getPullDiff(owner, repo, number);
-
-        const result = await reviewPull({
-            owner,
-            repo,
-            number,
-            title: detail.title,
-            diff,
-            maxDiffChars,
-            customPrompt: body.customPrompt?.trim(),
+        const result = await withSessionOverrides(req, async () => {
+            const detail = await getPullDetail(owner, repo, number);
+            const diff = await getPullDiff(owner, repo, number);
+            const review = await reviewPull({
+                owner,
+                repo,
+                number,
+                title: detail.title,
+                diff,
+                maxDiffChars,
+                customPrompt: body.customPrompt?.trim(),
+            });
+            return { detail, review };
         });
 
         return NextResponse.json({
             number,
-            title: detail.title,
-            model: result.model,
-            summary: result.summary,
-            verdict: result.verdict,
-            comments: result.comments,
-            markdown: result.markdown,
+            title: result.detail.title,
+            model: result.review.model,
+            summary: result.review.summary,
+            verdict: result.review.verdict,
+            comments: result.review.comments,
+            markdown: result.review.markdown,
         });
     } catch (e) {
         const message = e instanceof Error ? e.message : "Unknown error";

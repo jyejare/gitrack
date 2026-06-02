@@ -7,15 +7,29 @@ type MessageResponse = {
     content: Array<{ type: string; text?: string }>;
 };
 
-let authClient: GoogleAuth | null = null;
+let cachedAuth: { key: string; client: GoogleAuth } | null = null;
 
 function getAuthClient(): GoogleAuth {
-    if (!authClient) {
-        authClient = new GoogleAuth({
-            scopes: ["https://www.googleapis.com/auth/cloud-platform"],
-        });
+    const saKeyRaw = process.env.VERTEX_SA_KEY ?? "";
+    const cacheKey = saKeyRaw || "__adc__";
+
+    if (cachedAuth && cachedAuth.key === cacheKey) return cachedAuth.client;
+
+    const opts: ConstructorParameters<typeof GoogleAuth>[0] = {
+        scopes: ["https://www.googleapis.com/auth/cloud-platform"],
+    };
+
+    if (saKeyRaw) {
+        try {
+            opts.credentials = JSON.parse(saKeyRaw);
+        } catch {
+            throw new Error("Failed to parse VERTEX_SA_KEY – must be valid JSON");
+        }
     }
-    return authClient;
+
+    const client = new GoogleAuth(opts);
+    cachedAuth = { key: cacheKey, client };
+    return client;
 }
 
 async function getAccessToken(): Promise<string> {
