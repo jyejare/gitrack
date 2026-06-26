@@ -1,11 +1,21 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { useAiMode } from "@/components/AiModeContext";
 import { useMetrics } from "@/components/MetricsContext";
+import {
+    buildLlmHeaders,
+    parseRepoInput,
+    loadBookmarks,
+    saveBookmark,
+    removeBookmark,
+    type RepoBookmark,
+} from "@/lib/client-settings";
 
 function getSessionHeaders(): Record<string, string> {
-    return {};
+    return buildLlmHeaders();
 }
 
 type ReviewItem = {
@@ -150,6 +160,14 @@ type ReviewData = {
   model?: string;
 };
 
+/* ── Repo rules types ────────────────────────────────────────────────── */
+
+type RepoRuleFile = { path: string; content: string };
+type RepoRulesData = {
+    cursor: RepoRuleFile[];
+    claude: RepoRuleFile[];
+};
+
 /* ── Change type badge ───────────────────────────────────────────────── */
 
 const CHANGE_BADGE: Record<string, string> = {
@@ -204,7 +222,14 @@ const VERDICT_CONFIG: Record<string, { label: string; cls: string }> = {
   },
 };
 
-/* ── Code lines renderer (shared) ────────────────────────────────────── */
+/* ── Code helpers ────────────────────────────────────────────────────── */
+
+function normalizeCodeNewlines(code: string): string {
+  if (!code.includes("\n") && code.includes("\\n")) {
+    return code.replace(/\\n/g, "\n");
+  }
+  return code;
+}
 
 function DiffLines({ code }: { code: string }) {
   const lines = code.split("\n");
@@ -225,6 +250,66 @@ function DiffLines({ code }: { code: string }) {
         </div>
       ))}
     </pre>
+  );
+}
+
+/* ── Shared Markdown renderer (react-markdown + remark-gfm) ─────────── */
+
+const mdComponents: Record<string, React.ComponentType<Record<string, unknown>>> = {
+  h1: (props: Record<string, unknown>) => <h1 className="mt-4 first:mt-0 text-base font-bold text-slate-900 dark:text-slate-100" {...props} />,
+  h2: (props: Record<string, unknown>) => <h2 className="mt-4 first:mt-0 text-base font-semibold text-slate-900 dark:text-slate-100" {...props} />,
+  h3: (props: Record<string, unknown>) => <h3 className="mt-3 text-sm font-semibold text-slate-900 dark:text-slate-100" {...props} />,
+  h4: (props: Record<string, unknown>) => <h4 className="mt-2 text-xs font-semibold text-slate-900 dark:text-slate-100" {...props} />,
+  p: (props: Record<string, unknown>) => <p className="my-1.5 text-sm leading-relaxed text-slate-700 dark:text-slate-300" {...props} />,
+  ul: (props: Record<string, unknown>) => <ul className="my-1.5 ml-4 list-disc text-sm text-slate-700 dark:text-slate-300" {...props} />,
+  ol: (props: Record<string, unknown>) => <ol className="my-1.5 ml-4 list-decimal text-sm text-slate-700 dark:text-slate-300" {...props} />,
+  li: (props: Record<string, unknown>) => <li className="my-0.5 leading-relaxed" {...props} />,
+  hr: (props: Record<string, unknown>) => <hr className="my-3 border-slate-300 dark:border-slate-700" {...props} />,
+  blockquote: (props: Record<string, unknown>) => <blockquote className="my-2 border-l-2 border-slate-400 pl-3 text-sm italic text-slate-500 dark:border-slate-600 dark:text-slate-400" {...props} />,
+  a: (props: Record<string, unknown>) => <a className="text-emerald-600 underline hover:text-emerald-500 dark:text-emerald-400" target="_blank" rel="noopener noreferrer" {...props} />,
+  strong: (props: Record<string, unknown>) => <strong className="font-semibold text-slate-900 dark:text-slate-100" {...props} />,
+  table: (props: Record<string, unknown>) => <div className="my-2 overflow-x-auto"><table className="min-w-full text-xs border-collapse" {...props} /></div>,
+  th: (props: Record<string, unknown>) => <th className="border border-slate-300 bg-slate-100 px-2 py-1 text-left font-semibold dark:border-slate-700 dark:bg-slate-800" {...props} />,
+  td: (props: Record<string, unknown>) => <td className="border border-slate-300 px-2 py-1 dark:border-slate-700" {...props} />,
+  code: ({ className, children, ...rest }: Record<string, unknown>) => {
+    const isBlock = typeof className === "string" && /language-/.test(className);
+    if (isBlock) {
+      const text = String(children ?? "").replace(/\n$/, "");
+      return (
+        <pre className="my-2 overflow-x-auto rounded-md border border-slate-700/50 bg-slate-950 p-2 text-[11px] leading-relaxed">
+          {text.split("\n").map((line, i) => (
+            <div
+              key={i}
+              className={
+                line.startsWith("+")
+                  ? "text-emerald-400"
+                  : line.startsWith("-")
+                    ? "text-rose-400"
+                    : "text-slate-300"
+              }
+            >
+              {line}
+            </div>
+          ))}
+        </pre>
+      );
+    }
+    return (
+      <code className="rounded bg-slate-100 px-1 py-0.5 text-xs text-cyan-700 dark:bg-slate-800 dark:text-cyan-300" {...rest}>
+        {children as React.ReactNode}
+      </code>
+    );
+  },
+  pre: ({ children }: Record<string, unknown>) => <>{children}</>,
+};
+
+function MarkdownBody({ text }: { text: string }) {
+  return (
+    <div className="max-w-none text-sm">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+        {text}
+      </ReactMarkdown>
+    </div>
   );
 }
 
@@ -262,9 +347,9 @@ function GlanceView({ summary, walkthrough }: { summary: string; walkthrough: Wa
 
 function GlanceFallback({ markdown }: { markdown: string }) {
   return (
-    <article className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-slate-200">
-      {markdown}
-    </article>
+    <div className="mt-2">
+      <MarkdownBody text={markdown} />
+    </div>
   );
 }
 
@@ -385,7 +470,9 @@ function ReviewCommentsView({
           </div>
         ) : (
           <div className="group relative">
-            <p className="text-sm leading-relaxed text-slate-700 dark:text-slate-300">{summary}</p>
+            <div className="text-sm leading-relaxed text-slate-700 dark:text-slate-300">
+              <MarkdownBody text={summary} />
+            </div>
             <button
               type="button"
               className="mt-1 text-[11px] text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400"
@@ -485,19 +572,19 @@ function ReviewCommentsView({
                               </button>
                             </div>
                           </div>
-                          <p className="mt-1 text-xs leading-relaxed text-slate-600 dark:text-slate-300">{c.body}</p>
+                          <div className="mt-1 text-xs leading-relaxed text-slate-600 dark:text-slate-300">
+                            <MarkdownBody text={c.body} />
+                          </div>
                           {c.existing_code ? (
                             <div className="mt-2">
                               <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Current code</div>
-                              <DiffLines code={c.existing_code} />
+                              <DiffLines code={normalizeCodeNewlines(c.existing_code)} />
                             </div>
                           ) : null}
                           {c.suggested_code ? (
                             <div className="mt-2">
                               <div className="text-[10px] font-medium uppercase tracking-wide text-emerald-600 dark:text-emerald-400">Suggested replacement</div>
-                              <pre className="mt-1 overflow-x-auto rounded-md border border-emerald-700/40 bg-emerald-950/30 p-2 text-[11px] leading-relaxed">
-                                <code className="text-emerald-300">{c.suggested_code}</code>
-                              </pre>
+                              <DiffLines code={normalizeCodeNewlines(c.suggested_code)} />
                             </div>
                           ) : null}
                         </div>
@@ -555,21 +642,7 @@ function ReviewCommentsView({
 /* ── Markdown fallback for review ────────────────────────────────────── */
 
 function ReviewFallback({ markdown }: { markdown: string }) {
-  return (
-    <article className="prose prose-sm max-w-none dark:prose-invert prose-headings:text-base prose-headings:font-semibold prose-code:rounded prose-code:bg-slate-100 prose-code:px-1 prose-code:py-0.5 prose-code:text-xs prose-code:before:content-none prose-code:after:content-none dark:prose-code:bg-slate-800 prose-pre:bg-slate-50 prose-pre:text-xs dark:prose-pre:bg-slate-900 prose-hr:my-3">
-      {markdown.split("\n").map((line, i) => {
-        if (line.startsWith("## "))
-          return <h2 key={i} className="mt-4 first:mt-0">{line.slice(3)}</h2>;
-        if (line.startsWith("### "))
-          return <h3 key={i} className="mt-3 text-sm font-semibold text-slate-900 dark:text-slate-100">{line.slice(4)}</h3>;
-        if (line === "---")
-          return <hr key={i} />;
-        if (line === "")
-          return <div key={i} className="h-2" />;
-        return <p key={i} className="my-0 text-slate-700 dark:text-slate-300">{line}</p>;
-      })}
-    </article>
-  );
+  return <MarkdownBody text={markdown} />;
 }
 
 /* ── Insights / Review Guide renderer ────────────────────────────────── */
@@ -581,121 +654,44 @@ const SECTION_THEMES = [
   { border: "border-teal-800/50 bg-teal-950/25", heading: "text-teal-300" },
 ];
 
-function InlineCode({ text }: { text: string }) {
-  const parts = text.split(/(`[^`]+`)/g);
-  return (
-    <>
-      {parts.map((p, i) =>
-        p.startsWith("`") && p.endsWith("`") ? (
-          <code key={i} className="rounded bg-slate-800 px-1 py-0.5 text-cyan-300">
-            {p.slice(1, -1)}
-          </code>
-        ) : (
-          <span key={i}>{p}</span>
-        ),
-      )}
-    </>
-  );
-}
-
-type ContentBlock =
-  | { kind: "item"; text: string }
-  | { kind: "code"; lines: string[] }
-  | { kind: "text"; text: string };
-
-function parseSectionContent(raw: string): ContentBlock[] {
-  const lines = raw.split("\n");
-  const blocks: ContentBlock[] = [];
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    if (/^```/.test(line)) {
-      const codeLines: string[] = [];
-      i++;
-      while (i < lines.length && !/^```/.test(lines[i])) {
-        codeLines.push(lines[i]);
-        i++;
-      }
-      i++; // skip closing ```
-      if (codeLines.length > 0) blocks.push({ kind: "code", lines: codeLines });
-    } else if (/^\s*[-*]\s+/.test(line) || /^\s*\d+[.)]\s+/.test(line)) {
-      const text = line.replace(/^\s*[-*]\s+/, "").replace(/^\s*\d+[.)]\s+/, "");
-      blocks.push({ kind: "item", text });
-    } else if (line.trim()) {
-      blocks.push({ kind: "text", text: line });
-    }
-    i++;
-  }
-  return blocks;
-}
-
 function InsightsView({ markdown }: { markdown: string }) {
-  const parts = markdown.split(/^(?=#+\s+|\*\*[^*]+\*\*\s*$)/m).filter((s) => s.trim());
-  if (parts.length === 0) {
+  const sections = useMemo(() => {
+    const parts = markdown.split(/^(?=#{1,4}\s+|\*\*[^*]+\*\*\s*$)/m).filter((s) => s.trim());
+    return parts.map((part) => {
+      const lines = part.split("\n");
+      const isHeading = /^(#{1,4}\s+|\*\*[^*]+\*\*\s*$)/.test(lines[0]);
+      const heading = lines[0]
+        .replace(/^#{1,4}\s+/, "")
+        .replace(/\*\*/g, "")
+        .replace(/^["]+|["]+$/g, "")
+        .trim();
+      const content = lines.slice(isHeading ? 1 : 0).join("\n").trim();
+      return { heading: isHeading ? heading : "", content: isHeading ? content : part.trim() };
+    });
+  }, [markdown]);
+
+  if (sections.length === 0) {
     return (
-      <article className="whitespace-pre-wrap text-xs leading-relaxed text-slate-200">
-        {markdown}
-      </article>
+      <div className="mt-2">
+        <MarkdownBody text={markdown} />
+      </div>
     );
   }
+
   return (
     <div className="mt-2 flex flex-col gap-3">
-      {parts.map((part, pi) => {
-        const lines = part.split("\n");
-        const isHeading = /^(#+\s+|\*\*[^*]+\*\*\s*$)/.test(lines[0]);
-        const heading = lines[0]
-          .replace(/^#+\s+/, "")
-          .replace(/\*\*/g, "")
-          .replace(/^["]+|["]+$/g, "")
-          .trim();
-        const content = lines.slice(isHeading ? 1 : 0).join("\n").trim();
-        const theme = SECTION_THEMES[pi % SECTION_THEMES.length];
-        const blocks = parseSectionContent(content);
-
-        let itemNum = 0;
+      {sections.map((sec, i) => {
+        const theme = SECTION_THEMES[i % SECTION_THEMES.length];
         return (
-          <div key={pi} className={`rounded-lg border p-3 ${theme.border}`}>
-            <h4 className={`text-xs font-semibold uppercase tracking-wide ${theme.heading}`}>
-              {heading}
-            </h4>
-            {blocks.length > 0 ? (
-              <div className="mt-2 flex flex-col gap-1">
-                {blocks.map((block, bi) => {
-                  if (block.kind === "item") {
-                    itemNum++;
-                    return (
-                      <div key={bi} className="text-xs leading-relaxed text-slate-200">
-                        <span className="font-semibold text-slate-400">{itemNum}.</span>{" "}
-                        <InlineCode text={block.text} />
-                      </div>
-                    );
-                  }
-                  if (block.kind === "code") {
-                    return (
-                      <pre key={bi} className="my-1 overflow-x-auto rounded-md border border-slate-700/50 bg-slate-950 p-2 text-[11px] leading-relaxed">
-                        {block.lines.map((line, li) => (
-                          <div
-                            key={li}
-                            className={
-                              line.startsWith("+")
-                                ? "text-emerald-400"
-                                : line.startsWith("-")
-                                  ? "text-rose-400"
-                                  : "text-slate-300"
-                            }
-                          >
-                            {line}
-                          </div>
-                        ))}
-                      </pre>
-                    );
-                  }
-                  return (
-                    <p key={bi} className="text-xs leading-relaxed text-slate-300">
-                      <InlineCode text={block.text} />
-                    </p>
-                  );
-                })}
+          <div key={i} className={`rounded-lg border p-3 ${theme.border}`}>
+            {sec.heading ? (
+              <h4 className={`text-xs font-semibold uppercase tracking-wide ${theme.heading}`}>
+                {sec.heading}
+              </h4>
+            ) : null}
+            {sec.content ? (
+              <div className="mt-2">
+                <MarkdownBody text={sec.content} />
               </div>
             ) : null}
           </div>
@@ -921,6 +917,7 @@ function MetricsPanel({ owner, repo }: { owner: string; repo: string }) {
 // ---------- Dashboard ----------
 
 export function Dashboard() {
+  const [repoInput, setRepoInput] = useState("");
   const [owner, setOwner] = useState("");
   const [repo, setRepo] = useState("");
   const [state, setState] = useState<"open" | "closed" | "all">("open");
@@ -929,6 +926,57 @@ export function Dashboard() {
 
   const { aiMode } = useAiMode();
   const { metrics: metricsMode } = useMetrics();
+
+  const [bookmarks, setBookmarks] = useState<RepoBookmark[]>([]);
+  const [showBookmarks, setShowBookmarks] = useState(false);
+  const bookmarkMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { setBookmarks(loadBookmarks()); }, []);
+
+  useEffect(() => {
+    if (!showBookmarks) return;
+    function handleClick(e: MouseEvent) {
+      if (bookmarkMenuRef.current && !bookmarkMenuRef.current.contains(e.target as Node)) {
+        setShowBookmarks(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [showBookmarks]);
+
+  const isBookmarked = useMemo(
+    () => owner && repo && bookmarks.some(
+      (b) => b.owner.toLowerCase() === owner.toLowerCase() && b.repo.toLowerCase() === repo.toLowerCase(),
+    ),
+    [bookmarks, owner, repo],
+  );
+
+  const applyRepoInput = useCallback((input: string) => {
+    const parsed = parseRepoInput(input);
+    if (parsed) {
+      setOwner(parsed.owner);
+      setRepo(parsed.repo);
+      setRepoInput(`${parsed.owner}/${parsed.repo}`);
+      return true;
+    }
+    return false;
+  }, []);
+
+  const handleToggleBookmark = useCallback(() => {
+    if (!owner || !repo) return;
+    if (isBookmarked) {
+      setBookmarks(removeBookmark(owner, repo));
+    } else {
+      setBookmarks(saveBookmark(owner, repo));
+    }
+  }, [owner, repo, isBookmarked]);
+
+  const handleSelectBookmark = useCallback((b: RepoBookmark) => {
+    setOwner(b.owner);
+    setRepo(b.repo);
+    setRepoInput(`${b.owner}/${b.repo}`);
+    setShowBookmarks(false);
+  }, []);
 
   const [priorityView, setPriorityView] = useState<PriorityView>("all");
   const [prioritySort, setPrioritySort] = useState<PrioritySort>("updatedDesc");
@@ -960,6 +1008,12 @@ export function Dashboard() {
   const [savingRule, setSavingRule] = useState(false);
   const [saveRuleName, setSaveRuleName] = useState("");
   const [showSaveInput, setShowSaveInput] = useState(false);
+
+  const [repoRules, setRepoRules] = useState<RepoRulesData | null>(null);
+  const [repoRulesLoading, setRepoRulesLoading] = useState(false);
+  const [repoRulesError, setRepoRulesError] = useState<string | null>(null);
+  const [selectedRulePaths, setSelectedRulePaths] = useState<Set<string>>(new Set());
+  const [showRepoRules, setShowRepoRules] = useState(false);
 
   const canLoad = owner.trim() && repo.trim();
 
@@ -1010,6 +1064,65 @@ export function Dashboard() {
     await fetchSavedRules();
   };
 
+  const fetchRepoRulesFromGH = useCallback(async () => {
+    if (!canLoad) return;
+    setRepoRulesLoading(true);
+    setRepoRulesError(null);
+    try {
+      const res = await fetch(
+        `/api/repo-rules?owner=${encodeURIComponent(owner.trim())}&repo=${encodeURIComponent(repo.trim())}`,
+        { headers: getSessionHeaders() },
+      );
+      if (!res.ok) {
+        const json = (await res.json()) as { error?: string };
+        throw new Error(json.error ?? `Failed to fetch repo rules (${res.status})`);
+      }
+      const json = (await res.json()) as { rules: RepoRulesData };
+      setRepoRules(json.rules);
+    } catch (e) {
+      setRepoRulesError(e instanceof Error ? e.message : "Failed to fetch repo rules");
+      setRepoRules(null);
+    } finally {
+      setRepoRulesLoading(false);
+    }
+  }, [canLoad, owner, repo]);
+
+  const allRuleFiles = useMemo(() => {
+    if (!repoRules) return [];
+    return [
+      ...repoRules.cursor.map((r) => ({ ...r, source: "cursor" as const })),
+      ...repoRules.claude.map((r) => ({ ...r, source: "claude" as const })),
+    ];
+  }, [repoRules]);
+
+  const selectedRulesText = useMemo(() => {
+    if (selectedRulePaths.size === 0) return "";
+    const sections: string[] = [];
+    for (const rf of allRuleFiles) {
+      if (selectedRulePaths.has(rf.path)) {
+        sections.push(`── ${rf.path} ──\n${rf.content}`);
+      }
+    }
+    return sections.join("\n\n");
+  }, [allRuleFiles, selectedRulePaths]);
+
+  const toggleRulePath = useCallback((path: string) => {
+    setSelectedRulePaths((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }, []);
+
+  const toggleAllRules = useCallback((checked: boolean) => {
+    if (checked) {
+      setSelectedRulePaths(new Set(allRuleFiles.map((r) => r.path)));
+    } else {
+      setSelectedRulePaths(new Set());
+    }
+  }, [allRuleFiles]);
+
   const fetchPrs = useCallback(
     async (targetPage: number, searchQuery?: string) => {
       if (!canLoad) return;
@@ -1042,8 +1155,11 @@ export function Dashboard() {
   );
 
   useEffect(() => {
-    if (data && canLoad) void fetchSavedRules();
-  }, [data, canLoad, fetchSavedRules]);
+    if (data && canLoad) {
+      void fetchSavedRules();
+      void fetchRepoRulesFromGH();
+    }
+  }, [data, canLoad, fetchSavedRules, fetchRepoRulesFromGH]);
 
   useEffect(() => {
     const q = search.trim();
@@ -1112,6 +1228,7 @@ export function Dashboard() {
     try {
       const payload: Record<string, unknown> = { owner: owner.trim(), repo: repo.trim(), number };
       if (reviewPrompt.trim()) payload.customPrompt = reviewPrompt.trim();
+      if (selectedRulesText) payload.repoRulesContext = selectedRulesText;
       const res = await fetch("/api/review", {
         method: "POST",
         headers: { "content-type": "application/json", ...getSessionHeaders() },
@@ -1355,24 +1472,88 @@ export function Dashboard() {
     <div className="flex flex-col gap-6">
       <section className="rounded-xl border border-slate-200 bg-white/60 p-4 dark:border-slate-800 dark:bg-slate-900/40">
         <div className="grid gap-3 md:grid-cols-6">
-          <label className="flex flex-col gap-1 md:col-span-2">
-            <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Owner</span>
-            <input
-              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none ring-emerald-500/40 focus:ring-2 dark:border-slate-700 dark:bg-slate-950"
-              placeholder="e.g. acme-corp"
-              value={owner}
-              onChange={(e) => setOwner(e.target.value)}
-            />
-          </label>
-          <label className="flex flex-col gap-1 md:col-span-2">
-            <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Repo</span>
-            <input
-              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none ring-emerald-500/40 focus:ring-2 dark:border-slate-700 dark:bg-slate-950"
-              placeholder="e.g. billing-service"
-              value={repo}
-              onChange={(e) => setRepo(e.target.value)}
-            />
-          </label>
+          <div className="relative flex flex-col gap-1 md:col-span-4">
+            <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Repository</span>
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <input
+                  className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none ring-emerald-500/40 focus:ring-2 dark:border-slate-700 dark:bg-slate-950"
+                  placeholder="e.g. https://github.com/acme-corp/billing-service or acme-corp/billing-service"
+                  value={repoInput}
+                  onChange={(e) => {
+                    setRepoInput(e.target.value);
+                    const parsed = parseRepoInput(e.target.value);
+                    if (parsed) { setOwner(parsed.owner); setRepo(parsed.repo); }
+                    else { setOwner(""); setRepo(""); }
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && canLoad) { setSearch(""); void fetchPrs(1); }
+                  }}
+                />
+                {owner && repo && (
+                  <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+                    {owner}/{repo}
+                  </span>
+                )}
+              </div>
+              <button
+                type="button"
+                title={isBookmarked ? "Remove bookmark" : "Bookmark this repo"}
+                disabled={!owner || !repo}
+                className="rounded-md border border-slate-300 bg-white px-2.5 py-2 text-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900 dark:hover:bg-slate-800"
+                onClick={handleToggleBookmark}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill={isBookmarked ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={isBookmarked ? "text-amber-500" : "text-slate-400"}>
+                  <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
+                </svg>
+              </button>
+              <div className="relative" ref={bookmarkMenuRef}>
+                <button
+                  type="button"
+                  title="Saved repos"
+                  className="rounded-md border border-slate-300 bg-white px-2.5 py-2 text-sm hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:hover:bg-slate-800"
+                  onClick={() => setShowBookmarks((v) => !v)}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-slate-500">
+                    <line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" />
+                    <line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" />
+                  </svg>
+                </button>
+                {showBookmarks && (
+                  <div className="absolute right-0 top-full z-50 mt-1 w-72 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-900">
+                    <div className="border-b border-slate-100 px-3 py-2 dark:border-slate-800">
+                      <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">Saved Repositories</p>
+                    </div>
+                    {bookmarks.length === 0 ? (
+                      <p className="px-3 py-3 text-xs text-slate-400">No bookmarks yet. Bookmark a repo to see it here.</p>
+                    ) : (
+                      <div className="max-h-60 overflow-y-auto">
+                        {bookmarks.map((b) => (
+                          <div key={`${b.owner}/${b.repo}`} className="flex items-center gap-2 px-3 py-2 hover:bg-slate-50 dark:hover:bg-slate-800">
+                            <button
+                              type="button"
+                              className="flex-1 text-left text-sm text-slate-700 dark:text-slate-300"
+                              onClick={() => handleSelectBookmark(b)}
+                            >
+                              {b.owner}/{b.repo}
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded p-1 text-slate-400 hover:text-rose-500"
+                              title="Remove bookmark"
+                              onClick={() => setBookmarks(removeBookmark(b.owner, b.repo))}
+                            >
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
           <label className="flex flex-col gap-1">
             <span className="text-xs font-medium uppercase tracking-wide text-slate-500">State</span>
             <select
@@ -1513,6 +1694,104 @@ export function Dashboard() {
                   ))}
                 </select>
               ) : null}
+            </div>
+
+            {/* Repo coding rules (Cursor / Claude) */}
+            <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50/50 p-3 dark:border-slate-700 dark:bg-slate-900/30">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-medium text-slate-600 dark:text-slate-400">
+                    Repo coding rules
+                  </span>
+                  {repoRulesLoading ? (
+                    <span className="text-[10px] text-slate-400">Loading…</span>
+                  ) : allRuleFiles.length > 0 ? (
+                    <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+                      {allRuleFiles.length} file{allRuleFiles.length > 1 ? "s" : ""} found
+                    </span>
+                  ) : repoRules ? (
+                    <span className="text-[10px] text-slate-400">No .cursor or .claude rules found</span>
+                  ) : null}
+                  {selectedRulePaths.size > 0 && (
+                    <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
+                      {selectedRulePaths.size} selected for review
+                    </span>
+                  )}
+                </div>
+                {allRuleFiles.length > 0 && (
+                  <button
+                    type="button"
+                    className="text-xs font-medium text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                    onClick={() => setShowRepoRules((v) => !v)}
+                  >
+                    {showRepoRules ? "Hide" : "Show rules"}
+                  </button>
+                )}
+              </div>
+
+              {selectedRulePaths.size > 0 && (
+                <p className="mt-1.5 text-[10px] text-amber-600 dark:text-amber-400">
+                  Selected rules will be included in the review prompt, which may increase review time.
+                </p>
+              )}
+
+              {repoRulesError && (
+                <p className="mt-1.5 text-[10px] text-rose-500">{repoRulesError}</p>
+              )}
+
+              {showRepoRules && allRuleFiles.length > 0 && (
+                <div className="mt-2 flex flex-col gap-2">
+                  {/* Select all / none */}
+                  <div className="flex items-center gap-3 border-b border-slate-200 pb-2 dark:border-slate-700">
+                    <label className="flex cursor-pointer items-center gap-1.5">
+                      <input
+                        type="checkbox"
+                        checked={selectedRulePaths.size === allRuleFiles.length}
+                        ref={(el) => { if (el) el.indeterminate = selectedRulePaths.size > 0 && selectedRulePaths.size < allRuleFiles.length; }}
+                        onChange={(e) => toggleAllRules(e.target.checked)}
+                        className="h-3.5 w-3.5 rounded border-slate-300"
+                      />
+                      <span className="text-[11px] font-medium text-slate-500">
+                        {selectedRulePaths.size === allRuleFiles.length ? "Deselect all" : "Select all"}
+                      </span>
+                    </label>
+                  </div>
+
+                  {allRuleFiles.map((rf) => {
+                    const isSelected = selectedRulePaths.has(rf.path);
+                    const colorCls = rf.source === "cursor"
+                      ? "text-cyan-600 dark:text-cyan-400"
+                      : "text-violet-600 dark:text-violet-400";
+                    const tagLabel = rf.source === "cursor" ? "Cursor" : "Claude";
+                    const tagCls = rf.source === "cursor"
+                      ? "border-cyan-200 bg-cyan-50 text-cyan-700 dark:border-cyan-800 dark:bg-cyan-950/40 dark:text-cyan-300"
+                      : "border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-800 dark:bg-violet-950/40 dark:text-violet-300";
+
+                    return (
+                      <div key={rf.path} className="rounded-md border border-slate-200 dark:border-slate-700">
+                        <label className="flex cursor-pointer items-center gap-2 px-3 py-2">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => toggleRulePath(rf.path)}
+                            className="h-3.5 w-3.5 rounded border-slate-300"
+                          />
+                          <span className={`text-[11px] font-semibold ${colorCls}`}>{rf.path}</span>
+                          <span className={`rounded-full border px-1.5 py-0.5 text-[9px] font-semibold ${tagCls}`}>{tagLabel}</span>
+                        </label>
+                        {isSelected && (
+                          <textarea
+                            readOnly
+                            className="w-full resize-y border-t border-slate-200 bg-white px-3 py-2 font-mono text-xs text-slate-700 outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300"
+                            rows={Math.min(10, rf.content.split("\n").length + 1)}
+                            value={rf.content}
+                          />
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         ) : null}
@@ -2059,6 +2338,25 @@ export function Dashboard() {
                   {submitResult.error}
                 </div>
               ) : null}
+
+              {/* Main review comment (posted as the top-level body on GitHub) */}
+              {reviewData?.summary && reviewData.comments?.length && reviewLoadingFor === null ? (
+                <div className="mb-4 rounded-lg border border-indigo-200 bg-indigo-50/50 p-3 dark:border-indigo-800 dark:bg-indigo-950/30">
+                  <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-indigo-600 dark:text-indigo-400">
+                    Main review comment (posted to PR)
+                  </label>
+                  <textarea
+                    className="w-full resize-y rounded-md border border-indigo-200 bg-white px-3 py-2 text-sm leading-relaxed text-slate-700 outline-none ring-indigo-500/40 focus:border-indigo-400 focus:ring-2 dark:border-indigo-700 dark:bg-slate-950 dark:text-slate-300"
+                    rows={3}
+                    value={reviewData.summary}
+                    onChange={(e) => {
+                      setSubmitResult(null);
+                      setReviewData((prev) => prev ? { ...prev, summary: e.target.value } : prev);
+                    }}
+                  />
+                </div>
+              ) : null}
+
               {reviewData?.summary && reviewData.comments?.length ? (
                 <ReviewCommentsView
                   summary={reviewData.summary}

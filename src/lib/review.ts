@@ -25,6 +25,20 @@ function extractJson<T>(text: string): T | null {
     if (match) {
         try { return JSON.parse(match[1]); } catch { /* bad JSON inside fence */ }
     }
+    // Try to find the outermost { ... } and repair truncated JSON
+    const braceStart = trimmed.indexOf("{");
+    if (braceStart >= 0) {
+        let candidate = trimmed.slice(braceStart);
+        // Strip trailing markdown fence if present
+        candidate = candidate.replace(/\s*```\s*$/, "");
+        try { return JSON.parse(candidate); } catch { /* try repair */ }
+        // Attempt repair: drop the last partial entry and close the structure
+        const lastComplete = Math.max(candidate.lastIndexOf("},"), candidate.lastIndexOf("}]"));
+        if (lastComplete > 0) {
+            const repaired = candidate.slice(0, lastComplete + 2).replace(/,\s*$/, "") + "]}";
+            try { return JSON.parse(repaired); } catch { /* repair failed */ }
+        }
+    }
     return null;
 }
 
@@ -39,6 +53,7 @@ export async function reviewPull(input: {
     diff: string;
     maxDiffChars: number;
     customPrompt?: string;
+    repoRulesContext?: string;
 }): Promise<ReviewResult> {
     const truncated =
         input.diff.length > input.maxDiffChars
@@ -86,6 +101,16 @@ export async function reviewPull(input: {
         `- "suggested_code" should be provided whenever you have a concrete fix or improvement. For praise comments, omit it. Use \\n for line breaks.`,
         `- Include at least one praise comment if there is something genuinely well done.`,
         `- verdict: use "approve" if no critical/warning issues, "request-changes" if critical issues exist, "comment" otherwise.`,
+        ...(input.repoRulesContext
+            ? [
+                ``,
+                `The repository contains the following coding rules and conventions (.cursor/rules, .claude).`,
+                `You MUST enforce these rules during review — flag violations as warnings or suggestions:`,
+                `<repo-rules>`,
+                input.repoRulesContext,
+                `</repo-rules>`,
+            ]
+            : []),
         ...(input.customPrompt
             ? [
                 ``,
@@ -95,7 +120,7 @@ export async function reviewPull(input: {
             : []),
     ].join("\n");
 
-    const { model, text } = await callLlm(prompt, 4096);
+    const { model, text } = await callLlm(prompt, 8192);
 
     type RawShape = {
         summary?: string;

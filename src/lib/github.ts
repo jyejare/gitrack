@@ -352,6 +352,189 @@ export async function requestReviewers(
   return (await res.json()) as { requested_reviewers: { login: string }[] };
 }
 
+// ---- Repo file content (Contents API) ----
+
+type ContentsEntry = { name: string; path: string; type: "file" | "dir" };
+type ContentsFile = { encoding?: string; content?: string };
+
+async function fetchFileContent(owner: string, repo: string, path: string, ref?: string): Promise<string | null> {
+    const q = ref ? `?ref=${encodeURIComponent(ref)}` : "";
+    const token = requireEnv("GITHUB_TOKEN");
+    const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/contents/${path}${q}`, {
+        headers: {
+            Accept: "application/vnd.github+json",
+            Authorization: `Bearer ${token}`,
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+        cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as ContentsFile;
+    if (data.encoding === "base64" && data.content) {
+        return Buffer.from(data.content, "base64").toString("utf-8");
+    }
+    return null;
+}
+
+async function listDirEntries(owner: string, repo: string, path: string, ref?: string): Promise<ContentsEntry[]> {
+    const q = ref ? `?ref=${encodeURIComponent(ref)}` : "";
+    const token = requireEnv("GITHUB_TOKEN");
+    const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/contents/${path}${q}`, {
+        headers: {
+            Accept: "application/vnd.github+json",
+            Authorization: `Bearer ${token}`,
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+        cache: "no-store",
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data) ? (data as ContentsEntry[]) : [];
+}
+
+export type RepoRules = {
+    cursor: { path: string; content: string }[];
+    claude: { path: string; content: string }[];
+};
+
+async function collectFiles(
+    owner: string, repo: string, ref: string | undefined,
+    entries: ContentsEntry[],
+    pattern: RegExp,
+): Promise<{ path: string; content: string }[]> {
+    const matched = entries.filter((e) => e.type === "file" && pattern.test(e.name));
+    const results = await Promise.allSettled(
+        matched.map((f) => fetchFileContent(owner, repo, f.path, ref)),
+    );
+    const out: { path: string; content: string }[] = [];
+    for (let i = 0; i < matched.length; i++) {
+        const r = results[i];
+        const content = r.status === "fulfilled" ? r.value : null;
+        if (content) out.push({ path: matched[i].path, content });
+    }
+    return out;
+}
+
+/**
+ * Resolve a relative path reference against the file that contains it.
+ * e.g. filePath=".claude/skills/foo/SKILL.md", ref="../../../skills/foo/SKILL.md"
+ *   => "skills/foo/SKILL.md"
+ */
+function resolveRelativePath(filePath: string, relativeTo: string): string {
+    const parts = filePath.split("/").slice(0, -1); // directory of the referencing file
+    for (const seg of relativeTo.split("/")) {
+        if (seg === "..") parts.pop();
+        else if (seg !== ".") parts.push(seg);
+    }
+    return parts.join("/");
+}
+
+/**
+ * Skills live in subdirectories (e.g. .claude/skills/foo/SKILL.md).
+ * The SKILL.md may contain actual content OR a relative path reference
+ * (e.g. "../../../skills/foo/SKILL.md") pointing to the real file.
+ */
+async function collectSkillFiles(
+    owner: string, repo: string, ref: string | undefined,
+    parentEntries: ContentsEntry[],
+): Promise<{ path: string; content: string }[]> {
+    const dirs = parentEntries.filter((e) => e.type === "dir");
+    if (dirs.length === 0) return [];
+
+    const skillPaths = dirs.map((d) => `${d.path}/SKILL.md`);
+    const results = await Promise.allSettled(
+        skillPaths.map((p) => fetchFileContent(owner, repo, p, ref)),
+    );
+
+    const out: { path: string; content: string }[] = [];
+    const redirects: { displayPath: string; targetPath: string }[] = [];
+
+    for (let i = 0; i < dirs.length; i++) {
+        const r = results[i];
+        const content = r.status === "fulfilled" ? r.value : null;
+        if (!content) continue;
+
+        const trimmed = content.trim();
+        // Detect if the content is just a relative path reference (short, single line, looks like a path)
+        if (trimmed.length < 200 && !trimmed.includes("\n") && /^\.{1,3}\//.test(trimmed)) {
+            const resolved = resolveRelativePath(skillPaths[i], trimmed);
+            redirects.push({ displayPath: skillPaths[i], targetPath: resolved });
+        } else {
+            out.push({ path: skillPaths[i], content });
+        }
+    }
+
+    // Fetch the real files that were referenced by path
+    if (redirects.length > 0) {
+        const realResults = await Promise.allSettled(
+            redirects.map((rd) => fetchFileContent(owner, repo, rd.targetPath, ref)),
+        );
+        for (let i = 0; i < redirects.length; i++) {
+            const r = realResults[i];
+            const content = r.status === "fulfilled" ? r.value : null;
+            if (content) out.push({ path: redirects[i].targetPath, content });
+        }
+    }
+
+    return out;
+}
+
+export async function fetchRepoRules(owner: string, repo: string, ref?: string): Promise<RepoRules> {
+    const rules: RepoRules = { cursor: [], claude: [] };
+
+    const [
+        cursorrules,
+        cursorRulesDir, cursorSkillsDir,
+        rootClaude, rootAgents,
+        claudeDir, claudeRulesDir, claudeSkillsDir,
+    ] = await Promise.all([
+        fetchFileContent(owner, repo, ".cursorrules", ref),
+        listDirEntries(owner, repo, ".cursor/rules", ref),
+        listDirEntries(owner, repo, ".cursor/skills", ref),
+        fetchFileContent(owner, repo, "CLAUDE.md", ref),
+        fetchFileContent(owner, repo, "AGENTS.md", ref),
+        listDirEntries(owner, repo, ".claude", ref),
+        listDirEntries(owner, repo, ".claude/rules", ref),
+        listDirEntries(owner, repo, ".claude/skills", ref),
+    ]);
+
+    const mdPattern = /\.(md|mdc)$/i;
+
+    // Cursor: .cursorrules (legacy)
+    if (cursorrules) {
+        rules.cursor.push({ path: ".cursorrules", content: cursorrules });
+    }
+
+    // Cursor: .cursor/rules/*.md, *.mdc
+    rules.cursor.push(...await collectFiles(owner, repo, ref, cursorRulesDir, mdPattern));
+
+    // Cursor: .cursor/skills/*/SKILL.md (nested) + any loose .md/.mdc files
+    rules.cursor.push(...await collectFiles(owner, repo, ref, cursorSkillsDir, mdPattern));
+    rules.cursor.push(...await collectSkillFiles(owner, repo, ref, cursorSkillsDir));
+
+    // Claude: root CLAUDE.md
+    if (rootClaude) {
+        rules.claude.push({ path: "CLAUDE.md", content: rootClaude });
+    }
+
+    // Claude: root AGENTS.md
+    if (rootAgents) {
+        rules.claude.push({ path: "AGENTS.md", content: rootAgents });
+    }
+
+    // Claude: .claude/*.md
+    rules.claude.push(...await collectFiles(owner, repo, ref, claudeDir, mdPattern));
+
+    // Claude: .claude/rules/*.md
+    rules.claude.push(...await collectFiles(owner, repo, ref, claudeRulesDir, mdPattern));
+
+    // Claude: .claude/skills/*/SKILL.md (nested) + any loose .md files
+    rules.claude.push(...await collectFiles(owner, repo, ref, claudeSkillsDir, mdPattern));
+    rules.claude.push(...await collectSkillFiles(owner, repo, ref, claudeSkillsDir));
+
+    return rules;
+}
+
 export async function getPullDiff(owner: string, repo: string, number: number) {
   const token = requireEnv("GITHUB_TOKEN");
   const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/pulls/${number}`, {

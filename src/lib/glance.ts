@@ -21,6 +21,17 @@ function extractJson<T>(text: string): T | null {
     if (match) {
         try { return JSON.parse(match[1]); } catch { /* bad JSON inside fence */ }
     }
+    const braceStart = trimmed.indexOf("{");
+    if (braceStart >= 0) {
+        let candidate = trimmed.slice(braceStart);
+        candidate = candidate.replace(/\s*```\s*$/, "");
+        try { return JSON.parse(candidate); } catch { /* try repair */ }
+        const lastComplete = Math.max(candidate.lastIndexOf("},"), candidate.lastIndexOf("}]"));
+        if (lastComplete > 0) {
+            const repaired = candidate.slice(0, lastComplete + 2).replace(/,\s*$/, "") + "]}";
+            try { return JSON.parse(repaired); } catch { /* repair failed */ }
+        }
+    }
     return null;
 }
 

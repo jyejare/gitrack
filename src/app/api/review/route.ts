@@ -15,6 +15,7 @@ export async function POST(req: NextRequest) {
             number?: number;
             maxDiffChars?: number;
             customPrompt?: string;
+            repoRulesContext?: string;
         };
 
         const owner = body.owner?.trim();
@@ -44,6 +45,7 @@ export async function POST(req: NextRequest) {
                 diff,
                 maxDiffChars,
                 customPrompt: body.customPrompt?.trim(),
+                repoRulesContext: body.repoRulesContext?.trim(),
             });
             return { detail, review };
         });

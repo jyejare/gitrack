@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/components/AuthContext";
+import { loadLlmSettings, saveLlmSettings, clearLlmSettings, type LlmSettings } from "@/lib/client-settings";
 import Link from "next/link";
 
 type FieldConfig = {
@@ -404,66 +405,51 @@ export default function SettingsPage() {
     const { user, loading: authLoading } = useAuth();
 
     const [form, setForm] = useState<Record<string, string>>({});
-    const [serverValues, setServerValues] = useState<Record<string, string> | null>(null);
+    const [savedValues, setSavedValues] = useState<Record<string, string>>({});
     const [loading, setLoading] = useState(true);
-    const [saving, setSaving] = useState(false);
     const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
-    const loadSettings = useCallback(async () => {
-        if (!user) return;
-        setLoading(true);
-        try {
-            const res = await fetch("/api/settings");
-            const json = (await res.json()) as { settings?: Record<string, string> | null };
-            if (json.settings) {
-                setServerValues(json.settings);
-            }
-        } catch {
-            // Ignore load errors for new sessions
-        } finally {
-            setLoading(false);
+    const reloadFromStorage = useCallback(() => {
+        const stored = loadLlmSettings();
+        const asRecord: Record<string, string> = {};
+        for (const [k, v] of Object.entries(stored)) {
+            if (typeof v === "string" && v) asRecord[k] = v;
         }
-    }, [user]);
+        setSavedValues(asRecord);
+        setLoading(false);
+    }, []);
 
     useEffect(() => {
-        if (!authLoading && user) void loadSettings();
-        else if (!authLoading) setLoading(false);
-    }, [authLoading, user, loadSettings]);
+        if (!authLoading) reloadFromStorage();
+    }, [authLoading, reloadFromStorage]);
 
-    const handleSave = async () => {
-        setSaving(true);
+    const handleSave = () => {
         setMessage(null);
-        try {
-            const res = await fetch("/api/settings", {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({ settings: form }),
-            });
-            const json = (await res.json()) as { success?: boolean; error?: string };
-            if (!res.ok) throw new Error(json.error ?? "Failed to save settings");
-            setMessage({ type: "success", text: "Settings saved." });
-            setForm({});
-            await loadSettings();
-        } catch (e) {
-            setMessage({ type: "error", text: e instanceof Error ? e.message : "Failed to save" });
-        } finally {
-            setSaving(false);
+        const merged = { ...savedValues } as Record<string, string>;
+        for (const [k, v] of Object.entries(form)) {
+            if (v.trim()) merged[k] = v.trim();
         }
+        saveLlmSettings(merged as LlmSettings);
+        setForm({});
+        reloadFromStorage();
+        setMessage({ type: "success", text: "Settings saved to your browser." });
     };
 
-    const handleClear = async () => {
+    const handleClear = () => {
         setMessage(null);
-        try {
-            await fetch("/api/settings", { method: "DELETE" });
-            setServerValues(null);
-            setForm({});
-            setMessage({ type: "success", text: "Settings cleared." });
-        } catch {
-            setMessage({ type: "error", text: "Failed to clear settings" });
-        }
+        clearLlmSettings();
+        setSavedValues({});
+        setForm({});
+        setMessage({ type: "success", text: "Settings cleared." });
     };
 
-    const selectedProvider = form.llm_provider || serverValues?.llm_provider || "";
+    function maskKey(key: string | undefined): string {
+        if (!key) return "";
+        if (key.length <= 8) return "****";
+        return key.slice(0, 4) + "…" + key.slice(-4);
+    }
+
+    const selectedProvider = form.llm_provider || savedValues.llm_provider || "";
 
     return (
         <main className="flex flex-col gap-6">
@@ -513,7 +499,7 @@ export default function SettingsPage() {
                             </div>
                         </div>
                         <p className="mt-3 text-xs text-slate-500">
-                            Your GitHub token is used for API calls. LLM settings below are saved to your account.
+                            Your GitHub token is used for API calls. LLM settings below are stored in your browser only and never saved on the server.
                         </p>
                     </section>
 
@@ -528,7 +514,8 @@ export default function SettingsPage() {
                                     {FIELDS.map((f) => {
                                         if (f.provider && selectedProvider && f.provider !== selectedProvider) return null;
 
-                                        const serverVal = serverValues?.[f.key] ?? "";
+                                        const currentVal = savedValues[f.key] ?? "";
+                                        const displayVal = f.sensitive && currentVal ? `Current: ${maskKey(currentVal)}` : (currentVal || f.placeholder);
                                         const formVal = form[f.key] ?? "";
 
                                         const inputCls = "rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none ring-emerald-500/40 placeholder:text-slate-400 focus:ring-2 dark:border-slate-700 dark:bg-slate-950 dark:placeholder:text-slate-600";
@@ -540,7 +527,7 @@ export default function SettingsPage() {
                                                     <textarea
                                                         className={`${inputCls} resize-y font-mono text-xs`}
                                                         rows={4}
-                                                        placeholder={serverVal ? `Current: ${serverVal}` : f.placeholder}
+                                                        placeholder={displayVal}
                                                         value={formVal}
                                                         onChange={(e) => setForm((prev) => ({ ...prev, [f.key]: e.target.value }))}
                                                     />
@@ -548,7 +535,7 @@ export default function SettingsPage() {
                                                     <input
                                                         type={f.sensitive ? "password" : "text"}
                                                         className={inputCls}
-                                                        placeholder={serverVal ? `Current: ${serverVal}` : f.placeholder}
+                                                        placeholder={displayVal}
                                                         value={formVal}
                                                         onChange={(e) => setForm((prev) => ({ ...prev, [f.key]: e.target.value }))}
                                                     />
@@ -568,19 +555,23 @@ export default function SettingsPage() {
                                     </div>
                                 ) : null}
 
-                                <div className="mt-6 flex items-center gap-3">
+                                <p className="mt-2 text-[11px] text-slate-400 dark:text-slate-500">
+                                    Settings are stored in this browser&apos;s localStorage. They are never sent to or saved on the server.
+                                </p>
+
+                                <div className="mt-4 flex items-center gap-3">
                                     <button
                                         type="button"
                                         className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-40"
-                                        disabled={saving || Object.values(form).every((v) => !v.trim())}
-                                        onClick={() => void handleSave()}
+                                        disabled={Object.values(form).every((v) => !v.trim())}
+                                        onClick={handleSave}
                                     >
-                                        {saving ? "Saving..." : "Save Settings"}
+                                        Save Settings
                                     </button>
                                     <button
                                         type="button"
                                         className="rounded-md border border-rose-300 px-4 py-2 text-sm font-medium text-rose-600 hover:bg-rose-50 dark:border-rose-700 dark:text-rose-400 dark:hover:bg-rose-950/30"
-                                        onClick={() => void handleClear()}
+                                        onClick={handleClear}
                                     >
                                         Clear All
                                     </button>
