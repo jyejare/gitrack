@@ -15,6 +15,9 @@ export type UserSettings = {
     vertex_region?: string;
     vertex_model?: string;
     vertex_sa_key?: string;
+    vllm_host?: string;
+    vllm_model?: string;
+    vllm_api_key?: string;
 };
 
 type SettingsStore = Record<string, string>;

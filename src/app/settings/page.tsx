@@ -15,7 +15,7 @@ type FieldConfig = {
 };
 
 const FIELDS: FieldConfig[] = [
-    { key: "llm_provider", label: "LLM Provider", placeholder: "anthropic | groq | ollama | vertex", sensitive: false },
+    { key: "llm_provider", label: "LLM Provider", placeholder: "anthropic | groq | ollama | vertex | vllm", sensitive: false },
     { key: "anthropic_api_key", label: "Anthropic API Key", placeholder: "sk-ant-...", sensitive: true, provider: "anthropic" },
     { key: "anthropic_model", label: "Anthropic Model", placeholder: "claude-3-5-sonnet-20241022", sensitive: false, provider: "anthropic" },
     { key: "groq_api_key", label: "Groq API Key", placeholder: "gsk_...", sensitive: true, provider: "groq" },
@@ -26,6 +26,9 @@ const FIELDS: FieldConfig[] = [
     { key: "vertex_region", label: "Vertex Region", placeholder: "us-east5", sensitive: false, provider: "vertex" },
     { key: "vertex_model", label: "Vertex Model", placeholder: "claude-sonnet-4@20250514", sensitive: false, provider: "vertex" },
     { key: "vertex_sa_key", label: "Vertex SA Key (JSON)", placeholder: "Paste your service account key JSON here", sensitive: true, multiline: true, provider: "vertex" },
+    { key: "vllm_host", label: "vLLM Host", placeholder: "http://localhost:8000", sensitive: false, provider: "vllm" },
+    { key: "vllm_model", label: "vLLM Model", placeholder: "Model name served by vLLM", sensitive: false, provider: "vllm" },
+    { key: "vllm_api_key", label: "vLLM API Key (optional)", placeholder: "API key if auth is enabled", sensitive: true, provider: "vllm" },
 ];
 
 const PR_SIZES = ["XS", "S", "M", "L", "XL", "XXL"] as const;

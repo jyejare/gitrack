@@ -4,15 +4,17 @@ import { callAnthropicMessages } from "@/lib/anthropic";
 import { callGroqChatCompletions } from "@/lib/groq";
 import { callOllamaChatCompletions } from "@/lib/ollama";
 import { callVertexAnthropicMessages } from "@/lib/vertex";
+import { callVllmChatCompletions } from "@/lib/vllm";
 import type { UserSettings } from "@/lib/settings-store";
 
-export type LlmProvider = "anthropic" | "groq" | "ollama" | "vertex";
+export type LlmProvider = "anthropic" | "groq" | "ollama" | "vertex" | "vllm";
 
 const PROVIDER_DEFAULTS: Record<LlmProvider, { envModel: string; defaultModel: string }> = {
   anthropic: { envModel: "ANTHROPIC_MODEL", defaultModel: "claude-3-5-sonnet-20241022" },
   groq: { envModel: "GROQ_MODEL", defaultModel: "llama3-70b-8192" },
   ollama: { envModel: "OLLAMA_MODEL", defaultModel: "llama3" },
   vertex: { envModel: "VERTEX_MODEL", defaultModel: "claude-sonnet-4@20250514" },
+  vllm: { envModel: "VLLM_MODEL", defaultModel: "default" },
 };
 
 const CALL_FNS: Record<LlmProvider, (i: { model: string; prompt: string; maxTokens: number }) => Promise<string>> = {
@@ -20,6 +22,7 @@ const CALL_FNS: Record<LlmProvider, (i: { model: string; prompt: string; maxToke
   groq: callGroqChatCompletions,
   ollama: callOllamaChatCompletions,
   vertex: callVertexAnthropicMessages,
+  vllm: callVllmChatCompletions,
 };
 
 function normalize(input: string | undefined | null): string {
@@ -32,7 +35,9 @@ export function getLlmProvider(overrides?: UserSettings | null): LlmProvider {
   if (forced === "anthropic") return "anthropic";
   if (forced === "ollama") return "ollama";
   if (forced === "vertex") return "vertex";
+  if (forced === "vllm") return "vllm";
 
+  if (overrides?.vllm_host || process.env.VLLM_HOST) return "vllm";
   if (overrides?.ollama_host || process.env.OLLAMA_HOST) return "ollama";
   if (overrides?.vertex_project_id || process.env.VERTEX_PROJECT_ID) return "vertex";
   if (overrides?.groq_api_key || process.env.GROQ_API_KEY) return "groq";
@@ -59,6 +64,9 @@ export function applySettingsOverrides(settings: UserSettings | null | undefined
     VERTEX_PROJECT_ID: settings.vertex_project_id,
     VERTEX_REGION: settings.vertex_region,
     VERTEX_MODEL: settings.vertex_model,
+    VLLM_HOST: settings.vllm_host,
+    VLLM_MODEL: settings.vllm_model,
+    VLLM_API_KEY: settings.vllm_api_key,
   };
 
   // Write SA key JSON to a temp file so Google client libraries can use it
