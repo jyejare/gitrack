@@ -1,10 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { insightsPullWithClaude } from "@/lib/anthropic";
-import { insightsPullWithGroq } from "@/lib/groq";
-import { insightsPullWithOllama } from "@/lib/ollama";
-import { insightsPullWithVertex } from "@/lib/vertex";
 import { getPullDetail, getPullDiff } from "@/lib/github";
-import { getLlmProvider } from "@/lib/llm";
+import { insightsPull } from "@/lib/insights";
 import { withSessionOverrides, UnauthenticatedError } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -12,59 +8,53 @@ export const runtime = "nodejs";
 const DEFAULT_MAX_DIFF = 120_000;
 
 export async function POST(req: NextRequest) {
-  try {
-    const body = (await req.json()) as {
-      owner?: string;
-      repo?: string;
-      number?: number;
-      maxDiffChars?: number;
-    };
+    try {
+        const body = (await req.json()) as {
+            owner?: string;
+            repo?: string;
+            number?: number;
+            maxDiffChars?: number;
+        };
 
-    const owner = body.owner?.trim();
-    const repo = body.repo?.trim();
-    const number = body.number;
+        const owner = body.owner?.trim();
+        const repo = body.repo?.trim();
+        const number = body.number;
 
-    if (!owner || !repo || typeof number !== "number" || !Number.isFinite(number)) {
-      return NextResponse.json(
-        { error: "owner, repo, and numeric number are required" },
-        { status: 400 },
-      );
+        if (!owner || !repo || typeof number !== "number" || !Number.isFinite(number)) {
+            return NextResponse.json(
+                { error: "owner, repo, and numeric number are required" },
+                { status: 400 },
+            );
+        }
+
+        const maxDiffChars =
+            typeof body.maxDiffChars === "number" && body.maxDiffChars > 0
+                ? Math.min(body.maxDiffChars, 250_000)
+                : DEFAULT_MAX_DIFF;
+
+        const result = await withSessionOverrides(req, async () => {
+            const detail = await getPullDetail(owner, repo, number);
+            const diff = await getPullDiff(owner, repo, number);
+            const insights = await insightsPull({
+                owner, repo, number,
+                title: detail.title,
+                diff, maxDiffChars,
+            });
+            return { title: detail.title, ...insights };
+        });
+
+        return NextResponse.json({
+            number,
+            title: result.title,
+            model: result.model,
+            markdown: result.markdown,
+        });
+    } catch (e) {
+        if (e instanceof UnauthenticatedError) {
+            return NextResponse.json({ error: e.message }, { status: 401 });
+        }
+        const message = e instanceof Error ? e.message : "Unknown error";
+        return NextResponse.json({ error: message }, { status: 500 });
     }
-
-    const maxDiffChars =
-      typeof body.maxDiffChars === "number" && body.maxDiffChars > 0
-        ? Math.min(body.maxDiffChars, 250_000)
-        : DEFAULT_MAX_DIFF;
-
-    const responseData = await withSessionOverrides(req, async () => {
-      const detail = await getPullDetail(owner, repo, number);
-      const diff = await getPullDiff(owner, repo, number);
-      const provider = getLlmProvider();
-      const insightsArgs = { owner, repo, number, title: detail.title, diff, maxDiffChars };
-      const insightsFn =
-        provider === "groq"
-          ? insightsPullWithGroq
-          : provider === "ollama"
-            ? insightsPullWithOllama
-            : provider === "vertex"
-              ? insightsPullWithVertex
-              : insightsPullWithClaude;
-      const result = await insightsFn(insightsArgs);
-      return { title: detail.title, model: result.model, markdown: result.markdown };
-    });
-
-    return NextResponse.json({
-      number,
-      title: responseData.title,
-      model: responseData.model,
-      markdown: responseData.markdown,
-    });
-  } catch (e) {
-    if (e instanceof UnauthenticatedError) {
-      return NextResponse.json({ error: e.message }, { status: 401 });
-    }
-    const message = e instanceof Error ? e.message : "Unknown error";
-    return NextResponse.json({ error: message }, { status: 500 });
-  }
 }
 

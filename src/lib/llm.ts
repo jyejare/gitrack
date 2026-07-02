@@ -14,7 +14,7 @@ const PROVIDER_DEFAULTS: Record<LlmProvider, { envModel: string; defaultModel: s
   groq: { envModel: "GROQ_MODEL", defaultModel: "llama3-70b-8192" },
   ollama: { envModel: "OLLAMA_MODEL", defaultModel: "llama3" },
   vertex: { envModel: "VERTEX_MODEL", defaultModel: "claude-sonnet-4@20250514" },
-  vllm: { envModel: "VLLM_MODEL", defaultModel: "default" },
+  vllm: { envModel: "VLLM_MODEL", defaultModel: "auto" },
 };
 
 const CALL_FNS: Record<LlmProvider, (i: { model: string; prompt: string; maxTokens: number }) => Promise<string>> = {
