@@ -96,7 +96,7 @@ export default function LoginPage() {
                 <button
                     type="submit"
                     disabled={!token.trim() || loading}
-                    className="flex items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white transition-all hover:bg-slate-800 disabled:opacity-40 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-200"
+                    className="flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-cyan-600 px-4 py-3 text-sm font-medium text-white shadow-md transition-all hover:from-emerald-500 hover:to-cyan-500 disabled:opacity-40"
                 >
                     {loading ? (
                         "Verifying..."

@@ -69,9 +69,11 @@ export function applySettingsOverrides(settings: UserSettings | null | undefined
     VLLM_API_KEY: settings.vllm_api_key,
   };
 
-  // Write SA key JSON to a temp file so Google client libraries can use it
+  // Pass the SA key JSON directly so vertex.ts can use it via VERTEX_SA_KEY,
+  // and also write it to a temp file for GOOGLE_APPLICATION_CREDENTIALS fallback.
   let saKeyPath: string | null = null;
   if (settings.vertex_sa_key) {
+    envMap.VERTEX_SA_KEY = settings.vertex_sa_key;
     try {
       mkdirSync(SA_KEY_DIR, { recursive: true });
       saKeyPath = join(SA_KEY_DIR, `sa-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
