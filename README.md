@@ -4,7 +4,7 @@ Next.js app for **engineering org visibility** into pull requests: **merge readi
 
 ## Demo
 
-https://github.com/jyejare/gitrack/raw/refs/heads/main/assets/demo.mp4
+<video src="https://github.com/jyejare/gitrack/raw/refs/heads/main/assets/demo.mp4" width="100%" autoplay muted loop></video>
 
 ## Features
 
