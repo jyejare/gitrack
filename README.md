@@ -4,7 +4,7 @@ Next.js app for **engineering org visibility** into pull requests: **merge readi
 
 ## Demo
 
-[![Watch the demo](assets/demo-thumbnail.png)](https://github.com/jyejare/gitrack/releases/download/demo-assets/demo.mp4)
+https://github.com/user-attachments/assets/3610525f-c552-47ab-a0c9-b785b70a89ae
 
 ## Features
 
