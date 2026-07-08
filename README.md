@@ -2,6 +2,10 @@
 
 Next.js app for **engineering org visibility** into pull requests: **merge readiness scoring**, **CI checks + commit statuses**, **review summaries**, **PR size labels**, and **AI-powered review assistance** — including an "At a glance" code-focused summary and a structured Review Guide.
 
+## Demo
+
+https://github.com/jyejare/gitrack/raw/refs/heads/main/assets/demo.mp4
+
 ## Features
 
 - **Readiness score** — 0–100 score with per-criteria breakdown (draft, merge conflicts, review status, CI checks, approvals)
