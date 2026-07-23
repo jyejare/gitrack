@@ -21,9 +21,6 @@ spec:
           ports:
             - containerPort: 3000
               protocol: TCP
-          envFrom:
-            - secretRef:
-                name: gitrack-config
           resources:
             requests:
               cpu: 100m
@@ -43,23 +40,3 @@ spec:
               port: 3000
             initialDelaySeconds: 10
             periodSeconds: 30
-          volumeMounts:
-            - name: data
-              mountPath: /app/.data
-      volumes:
-        - name: data
-          persistentVolumeClaim:
-            claimName: gitrack-data
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: gitrack-data
-  labels:
-    app: gitrack
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 1Gi
