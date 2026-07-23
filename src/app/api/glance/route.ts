@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { glancePull } from "@/lib/glance";
 import { getPullDetail, getPullDiff } from "@/lib/github";
 import { withSessionOverrides, UnauthenticatedError } from "@/lib/session";
+import { LlmNotConfiguredError } from "@/lib/llm";
 
 export const runtime = "nodejs";
 
@@ -32,13 +33,14 @@ export async function POST(req: NextRequest) {
                 ? Math.min(body.maxDiffChars, 250_000)
                 : DEFAULT_MAX_DIFF;
 
-        const { detail, result } = await withSessionOverrides(req, async () => {
+        const { detail, result } = await withSessionOverrides(req, async (llmConfig) => {
             const detail = await getPullDetail(owner, repo, number);
             const diff = await getPullDiff(owner, repo, number);
             const result = await glancePull({
                 owner, repo, number,
                 title: detail.title,
                 diff, maxDiffChars,
+                llmConfig: llmConfig!,
             });
             return { detail, result };
         });
@@ -54,6 +56,9 @@ export async function POST(req: NextRequest) {
     } catch (e) {
         if (e instanceof UnauthenticatedError) {
             return NextResponse.json({ error: e.message }, { status: 401 });
+        }
+        if (e instanceof LlmNotConfiguredError) {
+            return NextResponse.json({ error: e.message }, { status: 422 });
         }
         const message = e instanceof Error ? e.message : "Unknown error";
         return NextResponse.json({ error: message }, { status: 500 });

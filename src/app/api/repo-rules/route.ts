@@ -17,9 +17,9 @@ export async function GET(req: NextRequest) {
             );
         }
 
-        const rules = await withSessionOverrides(req, () =>
+        const rules = await withSessionOverrides(req, (_llm) =>
             fetchRepoRules(owner, repo),
-        );
+        { requireLlm: false });
 
         return NextResponse.json({ rules });
     } catch (e) {

@@ -1,4 +1,4 @@
-import { callLlm } from "@/lib/llm";
+import { callLlm, type LlmConfig } from "@/lib/llm";
 
 export type InsightsResult = {
     model: string;
@@ -12,6 +12,7 @@ export async function insightsPull(input: {
     title: string;
     diff: string;
     maxDiffChars: number;
+    llmConfig: LlmConfig;
 }): Promise<InsightsResult> {
     const truncated =
         input.diff.length > input.maxDiffChars
@@ -37,6 +38,6 @@ export async function insightsPull(input: {
         `- Be concrete: prefer file/area references when available.`,
     ].join("\n");
 
-    const { model, text } = await callLlm(prompt, 1800);
+    const { model, text } = await callLlm(prompt, 1800, input.llmConfig);
     return { model, markdown: text };
 }

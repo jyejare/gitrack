@@ -98,7 +98,7 @@ export async function POST(req: NextRequest) {
         const event = VERDICT_TO_EVENT[body.verdict ?? "comment"] ?? "COMMENT";
         const comments = body.comments;
 
-        const result = await withSessionOverrides(req, async () => {
+        const result = await withSessionOverrides(req, async (_llm) => {
             const diff = await getPullDiff(owner, repo, number);
             const validLines = parseDiffValidLines(diff);
 
@@ -136,7 +136,7 @@ export async function POST(req: NextRequest) {
                 body: body.summary!,
                 comments: [...inlineComments, ...orphanedComments],
             });
-        });
+        }, { requireLlm: false });
 
         return NextResponse.json({
             success: true,

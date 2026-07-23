@@ -14,14 +14,14 @@ export async function GET(req: NextRequest) {
             return NextResponse.json({ error: "owner and repo are required" }, { status: 400 });
         }
 
-        return await withSessionOverrides(req, async () => {
+        return await withSessionOverrides(req, async (_llm) => {
             const collaborators = await listCollaborators(owner, repo);
             const team = collaborators.map((c) => ({
                 login: c.login,
                 avatar_url: c.avatar_url,
             }));
             return NextResponse.json({ team });
-        });
+        }, { requireLlm: false });
     } catch (e) {
         if (e instanceof UnauthenticatedError) {
             return NextResponse.json({ error: e.message }, { status: 401 });

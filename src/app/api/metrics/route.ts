@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { githubFetch } from "@/lib/github";
+import { getGithubToken } from "@/lib/request-context";
 import { withSessionOverrides, UnauthenticatedError } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -67,7 +68,7 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ error: "owner and repo are required" }, { status: 400 });
     }
 
-    return withSessionOverrides(req, async () => {
+    return withSessionOverrides(req, async (_llm) => {
     try {
         const since = new Date(Date.now() - days * 86400_000).toISOString().slice(0, 10);
 
@@ -113,7 +114,7 @@ export async function GET(req: NextRequest) {
 
         // Size distribution via GitHub GraphQL API (batched into single requests)
         const sizeDist: Record<string, number> = { XS: 0, S: 0, M: 0, L: 0, XL: 0 };
-        const ghToken = process.env.GITHUB_TOKEN;
+        const ghToken = getGithubToken();
         const prNumbers = recentPrs.map((p) => p.number);
         if (prNumbers.length > 0 && ghToken) {
             const aliases = prNumbers.map(
@@ -176,5 +177,5 @@ export async function GET(req: NextRequest) {
         const message = e instanceof Error ? e.message : "Unknown error";
         return NextResponse.json({ error: message }, { status: 500 });
     }
-});
+}, { requireLlm: false });
 }

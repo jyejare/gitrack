@@ -1,4 +1,4 @@
-import { callLlm } from "@/lib/llm";
+import { callLlm, type LlmConfig } from "@/lib/llm";
 
 export type WalkthroughEntry = {
     file: string;
@@ -42,6 +42,7 @@ export async function glancePull(input: {
     title: string;
     diff: string;
     maxDiffChars: number;
+    llmConfig: LlmConfig;
 }): Promise<GlanceResult> {
     const truncated =
         input.diff.length > input.maxDiffChars
@@ -81,7 +82,7 @@ export async function glancePull(input: {
         `- Prioritize logic changes, API changes, security-sensitive code, and error handling. Skip trivial formatting or import changes in the code field.`,
     ].join("\n");
 
-    const { model, text } = await callLlm(prompt, 3000);
+    const { model, text } = await callLlm(prompt, 3000, input.llmConfig);
 
     type RawShape = { summary?: string; walkthrough?: WalkthroughEntry[] };
     const parsed = extractJson<RawShape>(text);

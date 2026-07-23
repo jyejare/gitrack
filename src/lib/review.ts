@@ -1,4 +1,4 @@
-import { callLlm } from "@/lib/llm";
+import { callLlm, type LlmConfig } from "@/lib/llm";
 
 export type ReviewComment = {
     file: string;
@@ -54,6 +54,7 @@ export async function reviewPull(input: {
     maxDiffChars: number;
     customPrompt?: string;
     repoRulesContext?: string;
+    llmConfig: LlmConfig;
 }): Promise<ReviewResult> {
     const truncated =
         input.diff.length > input.maxDiffChars
@@ -120,7 +121,7 @@ export async function reviewPull(input: {
             : []),
     ].join("\n");
 
-    const { model, text } = await callLlm(prompt, 8192);
+    const { model, text } = await callLlm(prompt, 8192, input.llmConfig);
 
     type RawShape = {
         summary?: string;

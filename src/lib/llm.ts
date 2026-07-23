@@ -1,5 +1,3 @@
-import { writeFileSync, unlinkSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
 import { callAnthropicMessages } from "@/lib/anthropic";
 import { callGroqChatCompletions } from "@/lib/groq";
 import { callOllamaChatCompletions } from "@/lib/ollama";
@@ -9,105 +7,141 @@ import type { UserSettings } from "@/lib/settings-store";
 
 export type LlmProvider = "anthropic" | "groq" | "ollama" | "vertex" | "vllm";
 
-const PROVIDER_DEFAULTS: Record<LlmProvider, { envModel: string; defaultModel: string }> = {
-  anthropic: { envModel: "ANTHROPIC_MODEL", defaultModel: "claude-3-5-sonnet-20241022" },
-  groq: { envModel: "GROQ_MODEL", defaultModel: "llama3-70b-8192" },
-  ollama: { envModel: "OLLAMA_MODEL", defaultModel: "llama3" },
-  vertex: { envModel: "VERTEX_MODEL", defaultModel: "claude-sonnet-4@20250514" },
-  vllm: { envModel: "VLLM_MODEL", defaultModel: "auto" },
+/** Resolved credentials for a single LLM call — no process.env reads at runtime. */
+export type LlmConfig = {
+    provider: LlmProvider;
+    model: string;
+    anthropic_api_key?: string;
+    groq_api_key?: string;
+    ollama_host?: string;
+    vertex_project_id?: string;
+    vertex_region?: string;
+    vertex_sa_key?: string;
+    vllm_host?: string;
+    vllm_api_key?: string;
 };
 
-const CALL_FNS: Record<LlmProvider, (i: { model: string; prompt: string; maxTokens: number }) => Promise<string>> = {
-  anthropic: callAnthropicMessages,
-  groq: callGroqChatCompletions,
-  ollama: callOllamaChatCompletions,
-  vertex: callVertexAnthropicMessages,
-  vllm: callVllmChatCompletions,
+/** All request-scoped context needed by API handlers. */
+export type RequestContext = {
+    githubToken: string;
+    llmConfig: LlmConfig;
+};
+
+const PROVIDER_DEFAULTS: Record<LlmProvider, { settingsModel: keyof UserSettings; defaultModel: string }> = {
+    anthropic: { settingsModel: "anthropic_model", defaultModel: "claude-3-5-sonnet-20241022" },
+    groq: { settingsModel: "groq_model", defaultModel: "llama3-70b-8192" },
+    ollama: { settingsModel: "ollama_model", defaultModel: "llama3" },
+    vertex: { settingsModel: "vertex_model", defaultModel: "claude-sonnet-4@20250514" },
+    vllm: { settingsModel: "vllm_model", defaultModel: "auto" },
 };
 
 function normalize(input: string | undefined | null): string {
-  return (input ?? "").trim().toLowerCase();
+    return (input ?? "").trim().toLowerCase();
 }
 
-export function getLlmProvider(overrides?: UserSettings | null): LlmProvider {
-  const forced = normalize(overrides?.llm_provider ?? process.env.LLM_PROVIDER);
-  if (forced === "groq") return "groq";
-  if (forced === "anthropic") return "anthropic";
-  if (forced === "ollama") return "ollama";
-  if (forced === "vertex") return "vertex";
-  if (forced === "vllm") return "vllm";
-
-  if (overrides?.vllm_host || process.env.VLLM_HOST) return "vllm";
-  if (overrides?.ollama_host || process.env.OLLAMA_HOST) return "ollama";
-  if (overrides?.vertex_project_id || process.env.VERTEX_PROJECT_ID) return "vertex";
-  if (overrides?.groq_api_key || process.env.GROQ_API_KEY) return "groq";
-  return "anthropic";
+export class LlmNotConfiguredError extends Error {
+    constructor() {
+        super("No LLM provider configured. Go to Settings and configure an LLM provider with credentials.");
+        this.name = "LlmNotConfiguredError";
+    }
 }
 
-/**
- * Apply user settings as env var overrides for the current request.
- * Returns a cleanup function to restore originals.
- */
-const SA_KEY_DIR = join(process.cwd(), ".data", "sa-keys");
+export function resolveLlmConfig(settings: UserSettings | null | undefined): LlmConfig {
+    if (!settings) throw new LlmNotConfiguredError();
 
-export function applySettingsOverrides(settings: UserSettings | null | undefined): () => void {
-  if (!settings) return () => {};
-  const envMap: Record<string, string | undefined> = {
-    GITHUB_TOKEN: settings.github_token,
-    LLM_PROVIDER: settings.llm_provider,
-    ANTHROPIC_API_KEY: settings.anthropic_api_key,
-    ANTHROPIC_MODEL: settings.anthropic_model,
-    GROQ_API_KEY: settings.groq_api_key,
-    GROQ_MODEL: settings.groq_model,
-    OLLAMA_HOST: settings.ollama_host,
-    OLLAMA_MODEL: settings.ollama_model,
-    VERTEX_PROJECT_ID: settings.vertex_project_id,
-    VERTEX_REGION: settings.vertex_region,
-    VERTEX_MODEL: settings.vertex_model,
-    VLLM_HOST: settings.vllm_host,
-    VLLM_MODEL: settings.vllm_model,
-    VLLM_API_KEY: settings.vllm_api_key,
-  };
+    const provider = resolveProvider(settings);
+    const { settingsModel, defaultModel } = PROVIDER_DEFAULTS[provider];
+    const model = (settings[settingsModel] as string | undefined)?.trim() || defaultModel;
 
-  // Pass the SA key JSON directly so vertex.ts can use it via VERTEX_SA_KEY,
-  // and also write it to a temp file for GOOGLE_APPLICATION_CREDENTIALS fallback.
-  let saKeyPath: string | null = null;
-  if (settings.vertex_sa_key) {
-    envMap.VERTEX_SA_KEY = settings.vertex_sa_key;
-    try {
-      mkdirSync(SA_KEY_DIR, { recursive: true });
-      saKeyPath = join(SA_KEY_DIR, `sa-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
-      writeFileSync(saKeyPath, settings.vertex_sa_key, { mode: 0o600 });
-      envMap.GOOGLE_APPLICATION_CREDENTIALS = saKeyPath;
-    } catch {
-      saKeyPath = null;
-    }
-  }
-
-  const originals: Record<string, string | undefined> = {};
-  for (const [key, val] of Object.entries(envMap)) {
-    if (val) {
-      originals[key] = process.env[key];
-      process.env[key] = val;
-    }
-  }
-
-  return () => {
-    for (const [key, orig] of Object.entries(originals)) {
-      if (orig === undefined) delete process.env[key];
-      else process.env[key] = orig;
-    }
-    if (saKeyPath) {
-      try { unlinkSync(saKeyPath); } catch { /* already cleaned */ }
-    }
-  };
+    return {
+        provider,
+        model,
+        anthropic_api_key: settings.anthropic_api_key,
+        groq_api_key: settings.groq_api_key,
+        ollama_host: settings.ollama_host,
+        vertex_project_id: settings.vertex_project_id,
+        vertex_region: settings.vertex_region,
+        vertex_sa_key: settings.vertex_sa_key,
+        vllm_host: settings.vllm_host,
+        vllm_api_key: settings.vllm_api_key,
+    };
 }
 
-export async function callLlm(prompt: string, maxTokens: number, overrides?: UserSettings | null): Promise<{ model: string; text: string }> {
-  const provider = getLlmProvider(overrides);
-  const { envModel, defaultModel } = PROVIDER_DEFAULTS[provider];
-  const model = process.env[envModel] ?? defaultModel;
-  const text = await CALL_FNS[provider]({ model, prompt, maxTokens });
-  return { model, text };
+function resolveProvider(settings: UserSettings): LlmProvider {
+    const forced = normalize(settings.llm_provider);
+    if (forced === "groq") return "groq";
+    if (forced === "anthropic") return "anthropic";
+    if (forced === "ollama") return "ollama";
+    if (forced === "vertex") return "vertex";
+    if (forced === "vllm") return "vllm";
+
+    // Auto-detect from filled-in credentials
+    if (settings.vllm_host) return "vllm";
+    if (settings.ollama_host) return "ollama";
+    if (settings.vertex_project_id) return "vertex";
+    if (settings.groq_api_key) return "groq";
+    if (settings.anthropic_api_key) return "anthropic";
+
+    throw new LlmNotConfiguredError();
 }
 
+function validateConfig(config: LlmConfig): void {
+    switch (config.provider) {
+        case "anthropic":
+            if (!config.anthropic_api_key) throw new LlmNotConfiguredError();
+            break;
+        case "groq":
+            if (!config.groq_api_key) throw new LlmNotConfiguredError();
+            break;
+        case "vertex":
+            if (!config.vertex_project_id || !config.vertex_sa_key)
+                throw new LlmNotConfiguredError();
+            break;
+        case "ollama":
+            if (!config.ollama_host) throw new LlmNotConfiguredError();
+            break;
+        case "vllm":
+            if (!config.vllm_host) throw new LlmNotConfiguredError();
+            break;
+    }
+}
+
+export async function callLlm(
+    prompt: string,
+    maxTokens: number,
+    config: LlmConfig,
+): Promise<{ model: string; text: string }> {
+    validateConfig(config);
+
+    const input = { model: config.model, prompt, maxTokens };
+    let text: string;
+
+    switch (config.provider) {
+        case "anthropic":
+            text = await callAnthropicMessages({ ...input, apiKey: config.anthropic_api_key! });
+            break;
+        case "groq":
+            text = await callGroqChatCompletions({ ...input, apiKey: config.groq_api_key! });
+            break;
+        case "ollama":
+            text = await callOllamaChatCompletions({ ...input, host: config.ollama_host! });
+            break;
+        case "vertex":
+            text = await callVertexAnthropicMessages({
+                ...input,
+                projectId: config.vertex_project_id!,
+                region: config.vertex_region,
+                saKeyJson: config.vertex_sa_key!,
+            });
+            break;
+        case "vllm":
+            text = await callVllmChatCompletions({
+                ...input,
+                host: config.vllm_host!,
+                apiKey: config.vllm_api_key,
+            });
+            break;
+    }
+
+    return { model: config.model, text };
+}

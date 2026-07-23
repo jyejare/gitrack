@@ -1,11 +1,11 @@
-import { requireEnv } from "@/lib/env";
+import { getGithubToken } from "@/lib/request-context";
 
 const GITHUB_API = "https://api.github.com";
 
 type GithubFetchOptions = RequestInit & { next?: { revalidate?: number } };
 
 export async function githubFetch(path: string, options: GithubFetchOptions = {}) {
-  const token = requireEnv("GITHUB_TOKEN");
+  const token = getGithubToken();
   const { next, ...init } = options;
   const res = await fetch(`${GITHUB_API}${path}`, {
     ...init,
@@ -359,7 +359,7 @@ type ContentsFile = { encoding?: string; content?: string };
 
 async function fetchFileContent(owner: string, repo: string, path: string, ref?: string): Promise<string | null> {
     const q = ref ? `?ref=${encodeURIComponent(ref)}` : "";
-    const token = requireEnv("GITHUB_TOKEN");
+    const token = getGithubToken();
     const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/contents/${path}${q}`, {
         headers: {
             Accept: "application/vnd.github+json",
@@ -378,7 +378,7 @@ async function fetchFileContent(owner: string, repo: string, path: string, ref?:
 
 async function listDirEntries(owner: string, repo: string, path: string, ref?: string): Promise<ContentsEntry[]> {
     const q = ref ? `?ref=${encodeURIComponent(ref)}` : "";
-    const token = requireEnv("GITHUB_TOKEN");
+    const token = getGithubToken();
     const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/contents/${path}${q}`, {
         headers: {
             Accept: "application/vnd.github+json",
@@ -536,7 +536,7 @@ export async function fetchRepoRules(owner: string, repo: string, ref?: string):
 }
 
 export async function getPullDiff(owner: string, repo: string, number: number) {
-  const token = requireEnv("GITHUB_TOKEN");
+  const token = getGithubToken();
   const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/pulls/${number}`, {
     headers: {
       Accept: "application/vnd.github.diff",

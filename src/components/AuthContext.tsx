@@ -1,6 +1,7 @@
 "use client";
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { clearLlmSettings } from "@/lib/client-settings";
 
 type User = {
     login: string;
@@ -48,6 +49,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const logout = useCallback(async () => {
         await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+        clearLlmSettings();
         setUser(null);
     }, []);
 

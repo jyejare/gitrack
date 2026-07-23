@@ -85,7 +85,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "owner and repo are required" }, { status: 400 });
     }
 
-    return await withSessionOverrides(req, async () => {
+    return await withSessionOverrides(req, async (_llm) => {
       if (search) {
         const prNum = Number(search);
         if (Number.isFinite(prNum) && prNum > 0 && String(prNum) === search) {
@@ -138,7 +138,7 @@ export async function GET(req: NextRequest) {
           hasMore: pages.next !== undefined,
         },
       });
-    });
+    }, { requireLlm: false });
   } catch (e) {
     if (e instanceof UnauthenticatedError) {
       return NextResponse.json({ error: e.message }, { status: 401 });
