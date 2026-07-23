@@ -171,13 +171,6 @@ git push origin v0.4.0
 # → triggers build and push to quay.io/jyejare_redhat/gitrack:v0.4.0 + :latest
 ```
 
-**Required GitHub repository secrets:**
-
-| Secret | Description |
-|--------|-------------|
-| `QUAY_USERNAME` | Quay.io username |
-| `QUAY_PASSWORD` | Quay.io encrypted password or robot account token |
-
 ### OpenShift resource overview
 
 | File | Resource | Purpose |
