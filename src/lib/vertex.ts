@@ -12,6 +12,11 @@ async function getAccessToken(saKeyJson: string): Promise<string> {
         throw new Error("Failed to parse Vertex SA key — must be valid JSON");
     }
 
+    // Pasted keys sometimes store line breaks as "\\n". OpenSSL needs actual line breaks.
+    if (typeof credentials.private_key === "string") {
+        credentials.private_key = credentials.private_key.replace(/\\n/g, "\n");
+    }
+
     const auth = new GoogleAuth({
         credentials,
         scopes: ["https://www.googleapis.com/auth/cloud-platform"],
@@ -36,9 +41,13 @@ export async function callVertexAnthropicMessages(input: {
 }): Promise<string> {
     const region = input.region?.trim() || "us-east5";
     const accessToken = await getAccessToken(input.saKeyJson);
+    const host =
+        region.toLowerCase() === "global"
+            ? "aiplatform.googleapis.com"
+            : `${region}-aiplatform.googleapis.com`;
 
     const url =
-        `https://${region}-aiplatform.googleapis.com/v1/projects/${input.projectId}` +
+        `https://${host}/v1/projects/${input.projectId}` +
         `/locations/${region}/publishers/anthropic/models/${input.model}:rawPredict`;
 
     const res = await fetch(url, {
