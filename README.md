@@ -117,7 +117,18 @@ gcloud iam service-accounts keys create sa-key.json \
 3. Set **LLM Provider** to `vertex`.
 4. Fill in **Vertex Project ID** with your GCP project ID.
 5. Optionally set **Vertex Region** (default: `us-east5`) and **Vertex Model**.
-6. Paste the entire contents of your SA key `.json` file into the **Vertex SA Key (JSON)** field.
+   Models such as `claude-sonnet-5` and `claude-opus-4-8` are served on
+   region `global`, not on a regional location (for example `us-east5`).
+6. Paste the entire contents of your SA key `.json` file into the **Vertex SA Key (JSON)** field:
+
+   ```json
+   {
+     "type": "service_account",
+     "project_id": "my-gcp-project",
+     "private_key": "<pem-private-key>",
+     "client_email": "gitrack-vertex@my-gcp-project.iam.gserviceaccount.com"
+   }
+   ```
 7. Click **Save Settings**.
 
 The SA key is stored in your browser only and sent to the server per-request. It is never persisted on the server.

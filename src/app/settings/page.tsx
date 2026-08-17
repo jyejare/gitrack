@@ -548,6 +548,12 @@ export default function SettingsPage() {
                                     })}
                                 </div>
 
+                                {selectedProvider === "vertex" ? (
+                                    <p className="mt-3 text-xs text-slate-500">
+                                        Newer Claude models (Sonnet 5, Opus 4.8, …) are served on region <span className="font-mono">global</span>, not on a regional location such as <span className="font-mono">us-east5</span>. Example model id: <span className="font-mono">claude-sonnet-5</span>.
+                                    </p>
+                                ) : null}
+
                                 {message ? (
                                     <div className={`mt-4 rounded-md border px-3 py-2 text-sm ${
                                         message.type === "success"
