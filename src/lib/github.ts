@@ -553,6 +553,8 @@ export async function getPullDiff(owner: string, repo: string, number: number) {
         "This pull request diff is too large for GitHub's API (more than 20,000 lines). Glance, review, and insights cannot run on it.",
       );
     }
+    throw new Error(`Failed to fetch GitHub diff (${res.status}): ${text.slice(0, 500)}`);
+  }
   return res.text();
 }
 
