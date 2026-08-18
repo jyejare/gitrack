@@ -548,12 +548,11 @@ export async function getPullDiff(owner: string, repo: string, number: number) {
   if (!res.ok) {
     const text = await res.text();
     if (res.status === 406 && githubDiffTooLarge(text)) {
+      console.warn(`GitHub diff too large for PR ${owner}/${repo}#${number}`);
       throw new Error(
         "This pull request diff is too large for GitHub's API (more than 20,000 lines). Glance, review, and insights cannot run on it.",
       );
     }
-    throw new Error(`Failed to fetch GitHub diff (${res.status}): ${text.slice(0, 500)}`);
-  }
   return res.text();
 }
 
