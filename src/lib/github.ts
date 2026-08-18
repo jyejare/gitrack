@@ -547,7 +547,23 @@ export async function getPullDiff(owner: string, repo: string, number: number) {
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Failed to fetch GitHub diff (${res.status}): ${text.slice(0, 500)}`);
-  }
+    if (res.status === 406 && githubDiffTooLarge(text)) {
+      console.warn(`GitHub diff too large for PR ${owner}/${repo}#${number}`);
+      throw new Error(
+        "This pull request diff is too large for GitHub's API (more than 20,000 lines). Glance, review, and insights cannot run on it.",
+      );
+    }
   return res.text();
+}
+
+function githubDiffTooLarge(text: string): boolean {
+  try {
+    const json = JSON.parse(text) as {
+      message?: string;
+      errors?: Array<{ resource?: string; field?: string; code?: string }>;
+    };
+    return json.errors?.some((e) => e.field === "diff" && e.code === "too_large") === true;
+  } catch {
+    return false;
+  }
 }
