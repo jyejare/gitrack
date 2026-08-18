@@ -73,6 +73,62 @@ export function removeBookmark(owner: string, repo: string): RepoBookmark[] {
     return bookmarks;
 }
 
+// ---- Review Rules (localStorage, per-repo) ----
+
+const RULES_KEY = "gitrack:review-rules";
+
+export type SavedRule = {
+    name: string;
+    prompt: string;
+};
+
+type RulesStore = Record<string, SavedRule[]>;
+
+function repoKey(owner: string, repo: string): string {
+    return `${owner.toLowerCase()}/${repo.toLowerCase()}`;
+}
+
+function loadRulesStore(): RulesStore {
+    if (typeof window === "undefined") return {};
+    try {
+        const raw = localStorage.getItem(RULES_KEY);
+        return raw ? (JSON.parse(raw) as RulesStore) : {};
+    } catch {
+        return {};
+    }
+}
+
+function saveRulesStore(store: RulesStore): void {
+    if (typeof window === "undefined") return;
+    localStorage.setItem(RULES_KEY, JSON.stringify(store));
+}
+
+export function loadReviewRules(owner: string, repo: string): SavedRule[] {
+    return loadRulesStore()[repoKey(owner, repo)] ?? [];
+}
+
+export function saveReviewRule(owner: string, repo: string, name: string, prompt: string): SavedRule[] {
+    const store = loadRulesStore();
+    const key = repoKey(owner, repo);
+    const existing = store[key] ?? [];
+    const idx = existing.findIndex((r) => r.name === name);
+    const rule: SavedRule = { name, prompt };
+    if (idx >= 0) existing[idx] = rule;
+    else existing.push(rule);
+    store[key] = existing;
+    saveRulesStore(store);
+    return existing;
+}
+
+export function deleteReviewRule(owner: string, repo: string, name: string): SavedRule[] {
+    const store = loadRulesStore();
+    const key = repoKey(owner, repo);
+    const existing = store[key] ?? [];
+    store[key] = existing.filter((r) => r.name !== name);
+    saveRulesStore(store);
+    return store[key];
+}
+
 // ---- Repo URL parsing ----
 
 export function parseRepoInput(input: string): { owner: string; repo: string } | null {

@@ -11,7 +11,11 @@ import {
     loadBookmarks,
     saveBookmark,
     removeBookmark,
+    loadReviewRules,
+    saveReviewRule,
+    deleteReviewRule,
     type RepoBookmark,
+    type SavedRule,
 } from "@/lib/client-settings";
 
 function getSessionHeaders(): Record<string, string> {
@@ -1004,7 +1008,7 @@ export function Dashboard() {
   const [assignedReviewers, setAssignedReviewers] = useState<Record<number, string[]>>({});
   const [teamMembers, setTeamMembers] = useState<Record<string, { login: string; avatar_url: string }>>({});
 
-  const [savedRules, setSavedRules] = useState<Array<{ name: string; prompt: string }>>([]);
+  const [savedRules, setSavedRules] = useState<SavedRule[]>([]);
   const [savingRule, setSavingRule] = useState(false);
   const [saveRuleName, setSaveRuleName] = useState("");
   const [showSaveInput, setShowSaveInput] = useState(false);
@@ -1026,42 +1030,25 @@ export function Dashboard() {
     }
   }, [aiMode]);
 
-  const fetchSavedRules = useCallback(async () => {
+  const refreshSavedRules = useCallback(() => {
     if (!canLoad) return;
-    try {
-      const res = await fetch(`/api/rules?owner=${encodeURIComponent(owner.trim())}&repo=${encodeURIComponent(repo.trim())}`);
-      const json = (await res.json()) as { rules?: Array<{ name: string; prompt: string }> };
-      setSavedRules(json.rules ?? []);
-    } catch {
-      setSavedRules([]);
-    }
+    setSavedRules(loadReviewRules(owner.trim(), repo.trim()));
   }, [canLoad, owner, repo]);
 
-  const handleSaveRule = async () => {
+  const handleSaveRule = () => {
     if (!canLoad || !saveRuleName.trim() || !reviewPrompt.trim()) return;
     setSavingRule(true);
-    try {
-      await fetch("/api/rules", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ owner: owner.trim(), repo: repo.trim(), name: saveRuleName.trim(), prompt: reviewPrompt.trim() }),
-      });
-      await fetchSavedRules();
-      setShowSaveInput(false);
-      setSaveRuleName("");
-    } finally {
-      setSavingRule(false);
-    }
+    const updated = saveReviewRule(owner.trim(), repo.trim(), saveRuleName.trim(), reviewPrompt.trim());
+    setSavedRules(updated);
+    setShowSaveInput(false);
+    setSaveRuleName("");
+    setSavingRule(false);
   };
 
-  const handleDeleteRule = async (name: string) => {
+  const handleDeleteRule = (name: string) => {
     if (!canLoad) return;
-    await fetch("/api/rules", {
-      method: "DELETE",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ owner: owner.trim(), repo: repo.trim(), name }),
-    });
-    await fetchSavedRules();
+    const updated = deleteReviewRule(owner.trim(), repo.trim(), name);
+    setSavedRules(updated);
   };
 
   const fetchRepoRulesFromGH = useCallback(async () => {
@@ -1156,10 +1143,10 @@ export function Dashboard() {
 
   useEffect(() => {
     if (data && canLoad) {
-      void fetchSavedRules();
+      refreshSavedRules();
       void fetchRepoRulesFromGH();
     }
-  }, [data, canLoad, fetchSavedRules, fetchRepoRulesFromGH]);
+  }, [data, canLoad, refreshSavedRules, fetchRepoRulesFromGH]);
 
   useEffect(() => {
     const q = search.trim();
