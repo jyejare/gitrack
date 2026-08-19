@@ -14,6 +14,7 @@ import {
     loadReviewRules,
     saveReviewRule,
     deleteReviewRule,
+    loadReviewCommentHeading,
     type RepoBookmark,
     type SavedRule,
 } from "@/lib/client-settings";
@@ -377,6 +378,7 @@ function ReviewCommentsView({
   summary,
   verdict,
   comments,
+  includeCommentHeading,
   onUpdateSummary,
   onUpdateVerdict,
   onUpdateComment,
@@ -386,6 +388,7 @@ function ReviewCommentsView({
   summary: string;
   verdict: string;
   comments: ReviewCommentData[];
+  includeCommentHeading: boolean;
   onUpdateSummary: (s: string) => void;
   onUpdateVerdict: (v: string) => void;
   onUpdateComment: (index: number, c: ReviewCommentData) => void;
@@ -527,11 +530,13 @@ function ReviewCommentsView({
                   if (isEditing && editDraft) {
                     return (
                       <div key={ci} className="flex flex-col gap-2 bg-slate-50 px-3 py-3 dark:bg-slate-900/30">
-                        <div className="grid grid-cols-3 gap-2">
+                        <div className={`grid gap-2 ${includeCommentHeading ? "grid-cols-3" : "grid-cols-1"}`}>
                           <select className={inputCls} value={editDraft.severity} onChange={(e) => setEditDraft({ ...editDraft, severity: e.target.value })}>
                             {SEVERITY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                           </select>
-                          <input className={`${inputCls} col-span-2`} placeholder="Title" value={editDraft.title} onChange={(e) => setEditDraft({ ...editDraft, title: e.target.value })} />
+                          {includeCommentHeading ? (
+                            <input className={`${inputCls} col-span-2`} placeholder="Title" value={editDraft.title} onChange={(e) => setEditDraft({ ...editDraft, title: e.target.value })} />
+                          ) : null}
                         </div>
                         <textarea className={textareaCls} rows={3} placeholder="Comment body" value={editDraft.body} onChange={(e) => setEditDraft({ ...editDraft, body: e.target.value })} />
                         <div className="grid grid-cols-2 gap-2">
@@ -555,7 +560,9 @@ function ReviewCommentsView({
                         <div className="min-w-0 flex-1">
                           <div className="flex items-baseline justify-between gap-2">
                             <div className="flex items-baseline gap-2">
-                              <span className="text-sm font-medium text-slate-900 dark:text-slate-100">{c.title}</span>
+                              {includeCommentHeading ? (
+                                <span className="text-sm font-medium text-slate-900 dark:text-slate-100">{c.title}</span>
+                              ) : null}
                               {c.line ? <span className="text-[11px] text-slate-500">L{c.line}</span> : null}
                             </div>
                             <div className="flex flex-none items-center gap-1">
@@ -606,19 +613,21 @@ function ReviewCommentsView({
       {addingComment ? (
         <div className="flex flex-col gap-2 rounded-lg border border-dashed border-emerald-400 bg-emerald-50/30 p-3 dark:border-emerald-700 dark:bg-emerald-950/20">
           <div className="text-xs font-semibold text-emerald-700 dark:text-emerald-300">Add comment</div>
-          <div className="grid grid-cols-4 gap-2">
+          <div className={`grid gap-2 ${includeCommentHeading ? "grid-cols-4" : "grid-cols-2"}`}>
             <input className={inputCls} placeholder="File path" value={addDraft.file} onChange={(e) => setAddDraft({ ...addDraft, file: e.target.value })} />
             <select className={inputCls} value={addDraft.severity} onChange={(e) => setAddDraft({ ...addDraft, severity: e.target.value })}>
               {SEVERITY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
-            <input className={`${inputCls} col-span-2`} placeholder="Title" value={addDraft.title} onChange={(e) => setAddDraft({ ...addDraft, title: e.target.value })} />
+            {includeCommentHeading ? (
+              <input className={`${inputCls} col-span-2`} placeholder="Title" value={addDraft.title} onChange={(e) => setAddDraft({ ...addDraft, title: e.target.value })} />
+            ) : null}
           </div>
           <textarea className={textareaCls} rows={3} placeholder="Comment body" value={addDraft.body} onChange={(e) => setAddDraft({ ...addDraft, body: e.target.value })} />
           <div className="flex gap-2">
             <button
               type="button"
               className={`${btnSmCls} bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40`}
-              disabled={!addDraft.file.trim() || !addDraft.title.trim() || !addDraft.body.trim()}
+              disabled={!addDraft.file.trim() || !addDraft.body.trim() || (includeCommentHeading && !addDraft.title.trim())}
               onClick={() => {
                 onAddComment(addDraft);
                 setAddDraft({ file: "", severity: "suggestion", title: "", body: "" });
@@ -1001,9 +1010,15 @@ export function Dashboard() {
   const [reviewLoadingFor, setReviewLoadingFor] = useState<number | null>(null);
   const [reviewError, setReviewError] = useState<string | null>(null);
   const [reviewData, setReviewData] = useState<ReviewData | null>(null);
+  const [includeCommentHeading, setIncludeCommentHeading] = useState(true);
   const [reviewPrompt, setReviewPrompt] = useState("");
   const [submitLoading, setSubmitLoading] = useState(false);
   const [submitResult, setSubmitResult] = useState<{ success: boolean; url?: string; error?: string } | null>(null);
+
+  useEffect(() => { setIncludeCommentHeading(loadReviewCommentHeading()); }, []);
+  useEffect(() => {
+    if (reviewOpenFor !== null) setIncludeCommentHeading(loadReviewCommentHeading());
+  }, [reviewOpenFor]);
 
   const [assignedReviewers, setAssignedReviewers] = useState<Record<number, string[]>>({});
   const [teamMembers, setTeamMembers] = useState<Record<string, { login: string; avatar_url: string }>>({});
@@ -1265,6 +1280,7 @@ export function Dashboard() {
           summary: reviewData.summary,
           verdict: reviewData.verdict,
           comments: reviewData.comments,
+          includeCommentHeading,
         }),
       });
       const json = (await res.json()) as { success?: boolean; url?: string; error?: string };
@@ -2349,6 +2365,7 @@ export function Dashboard() {
                   summary={reviewData.summary}
                   verdict={reviewData.verdict ?? "comment"}
                   comments={reviewData.comments}
+                  includeCommentHeading={includeCommentHeading}
                   onUpdateSummary={(s) => { setSubmitResult(null); setReviewData((prev) => prev ? { ...prev, summary: s } : prev); }}
                   onUpdateVerdict={(v) => { setSubmitResult(null); setReviewData((prev) => prev ? { ...prev, verdict: v } : prev); }}
                   onUpdateComment={(idx, c) => {

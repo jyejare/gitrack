@@ -32,6 +32,23 @@ export function clearLlmSettings(): void {
     localStorage.removeItem(STORAGE_KEY);
 }
 
+const COMMENT_HEADING_KEY = "gitrack:review-comment-heading";
+
+/** Default true. When false, GitHub comments are posted without the [Severity] Title line. */
+export function loadReviewCommentHeading(): boolean {
+    if (typeof window === "undefined") return true;
+    try {
+        return localStorage.getItem(COMMENT_HEADING_KEY) !== "false";
+    } catch {
+        return true;
+    }
+}
+
+export function saveReviewCommentHeading(include: boolean): void {
+    if (typeof window === "undefined") return;
+    localStorage.setItem(COMMENT_HEADING_KEY, String(include));
+}
+
 export function buildLlmHeaders(): Record<string, string> {
     const settings = loadLlmSettings();
     const filled = Object.fromEntries(
