@@ -88,9 +88,9 @@ export async function POST(req: NextRequest) {
             );
         }
 
-        if (!body.summary || !Array.isArray(body.comments)) {
+        if (!Array.isArray(body.comments)) {
             return NextResponse.json(
-                { error: "summary and comments are required" },
+                { error: "comments are required" },
                 { status: 400 },
             );
         }
@@ -133,7 +133,7 @@ export async function POST(req: NextRequest) {
 
             return submitPrReview(owner, repo, number, {
                 event,
-                body: body.summary!,
+                body: body.summary ?? "",
                 comments: [...inlineComments, ...orphanedComments],
             });
         }, { requireLlm: false });

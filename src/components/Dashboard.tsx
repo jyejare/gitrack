@@ -1251,7 +1251,7 @@ export function Dashboard() {
   };
 
   const submitReviewToPr = async () => {
-    if (!reviewOpenFor || !reviewData?.summary || !reviewData.comments?.length) return;
+    if (!reviewOpenFor || !reviewData?.comments?.length) return;
     setSubmitLoading(true);
     setSubmitResult(null);
     try {
@@ -2268,7 +2268,7 @@ export function Dashboard() {
                 ) : null}
               </div>
               <div className="flex items-center gap-2">
-                {reviewData?.summary && reviewData.comments?.length ? (
+                {reviewData?.comments?.length ? (
                   <button
                     type="button"
                     className="rounded-md border border-emerald-500 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-800 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200 dark:hover:bg-emerald-950/70"
@@ -2327,14 +2327,15 @@ export function Dashboard() {
               ) : null}
 
               {/* Main review comment (posted as the top-level body on GitHub) */}
-              {reviewData?.summary && reviewData.comments?.length && reviewLoadingFor === null ? (
+              {reviewData && reviewLoadingFor === null ? (
                 <div className="mb-4 rounded-lg border border-indigo-200 bg-indigo-50/50 p-3 dark:border-indigo-800 dark:bg-indigo-950/30">
                   <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-indigo-600 dark:text-indigo-400">
-                    Main review comment (posted to PR)
+                    Main review comment (posted to PR, optional)
                   </label>
                   <textarea
                     className="w-full resize-y rounded-md border border-indigo-200 bg-white px-3 py-2 text-sm leading-relaxed text-slate-700 outline-none ring-indigo-500/40 focus:border-indigo-400 focus:ring-2 dark:border-indigo-700 dark:bg-slate-950 dark:text-slate-300"
                     rows={3}
+                    placeholder="Leave empty to post only the inline comments."
                     value={reviewData.summary}
                     onChange={(e) => {
                       setSubmitResult(null);
@@ -2344,7 +2345,7 @@ export function Dashboard() {
                 </div>
               ) : null}
 
-              {reviewData?.summary && reviewData.comments?.length ? (
+              {reviewData?.comments?.length ? (
                 <ReviewCommentsView
                   summary={reviewData.summary}
                   verdict={reviewData.verdict ?? "comment"}
