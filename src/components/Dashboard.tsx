@@ -367,6 +367,13 @@ const SEVERITY_OPTIONS: { value: string; label: string }[] = [
   { value: "praise", label: "Praise" },
 ];
 
+function severityRank(sev: string): number {
+  const i = SEVERITY_OPTIONS.findIndex((o) => o.value === sev);
+  return i === -1 ? SEVERITY_OPTIONS.length : i;
+}
+
+type CommentSort = "file" | "severity-desc" | "severity-asc";
+
 const VERDICT_OPTIONS: { value: string; label: string }[] = [
   { value: "approve", label: "Approve" },
   { value: "request-changes", label: "Changes Requested" },
@@ -393,6 +400,7 @@ function ReviewCommentsView({
   onAddComment: (c: ReviewCommentData) => void;
 }) {
   const [collapsedFiles, setCollapsedFiles] = useState<Set<string>>(new Set());
+  const [commentSort, setCommentSort] = useState<CommentSort>("file");
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
   const [editDraft, setEditDraft] = useState<ReviewCommentData | null>(null);
   const [editingSummary, setEditingSummary] = useState(false);
@@ -411,17 +419,6 @@ function ReviewCommentsView({
     });
   };
 
-  const globalIdx = (file: string, localIdx: number): number => {
-    let count = 0;
-    for (const c of comments) {
-      if (c.file === file) {
-        if (count === localIdx) return comments.indexOf(c);
-        count++;
-      }
-    }
-    return -1;
-  };
-
   const fileGroups = useMemo(() => {
     const groups = new Map<string, ReviewCommentData[]>();
     for (const c of comments) {
@@ -429,8 +426,27 @@ function ReviewCommentsView({
       existing.push(c);
       groups.set(c.file, existing);
     }
-    return Array.from(groups.entries());
-  }, [comments]);
+    const entries = Array.from(groups.entries());
+    if (commentSort === "file") return entries;
+
+    const criticalFirst = commentSort === "severity-desc";
+    for (const [, list] of entries) {
+      list.sort((a, b) => {
+        const diff = severityRank(a.severity) - severityRank(b.severity);
+        return criticalFirst ? diff : -diff;
+      });
+    }
+    entries.sort(([, a], [, b]) => {
+      const ra = criticalFirst
+        ? Math.min(...a.map((c) => severityRank(c.severity)))
+        : Math.max(...a.map((c) => severityRank(c.severity)));
+      const rb = criticalFirst
+        ? Math.min(...b.map((c) => severityRank(c.severity)))
+        : Math.max(...b.map((c) => severityRank(c.severity)));
+      return criticalFirst ? ra - rb : rb - ra;
+    });
+    return entries;
+  }, [comments, commentSort]);
 
   const severityCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -486,7 +502,7 @@ function ReviewCommentsView({
             </button>
           </div>
         )}
-        <div className="flex flex-wrap gap-2 border-t border-slate-200 pt-3 dark:border-slate-700/50">
+        <div className="flex flex-wrap items-center gap-2 border-t border-slate-200 pt-3 dark:border-slate-700/50">
           {Object.entries(severityCounts).map(([sev, count]) => {
             const cfg = SEVERITY_CONFIG[sev] ?? SEVERITY_CONFIG.suggestion;
             return (
@@ -495,6 +511,18 @@ function ReviewCommentsView({
               </span>
             );
           })}
+          <label className="ml-auto flex items-center gap-1.5 text-[11px] text-slate-500">
+            Sort
+            <select
+              className="rounded-md border border-slate-300 bg-white px-2 py-0.5 text-[11px] outline-none ring-emerald-500/40 focus:ring-2 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+              value={commentSort}
+              onChange={(e) => setCommentSort(e.target.value as CommentSort)}
+            >
+              <option value="file">By file</option>
+              <option value="severity-desc">Severity desc</option>
+              <option value="severity-asc">Severity asc</option>
+            </select>
+          </label>
         </div>
       </div>
 
@@ -520,7 +548,7 @@ function ReviewCommentsView({
             {!isCollapsed ? (
               <div className="divide-y divide-slate-100 bg-white/60 dark:divide-slate-800 dark:bg-slate-950/40">
                 {fileComments.map((c, ci) => {
-                  const gIdx = globalIdx(file, ci);
+                  const gIdx = comments.indexOf(c);
                   const isEditing = editingIdx === gIdx;
                   const sCfg = SEVERITY_CONFIG[c.severity] ?? SEVERITY_CONFIG.suggestion;
 
