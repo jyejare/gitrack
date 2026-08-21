@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/components/AuthContext";
-import { loadLlmSettings, saveLlmSettings, clearLlmSettings, type LlmSettings } from "@/lib/client-settings";
+import { loadLlmSettings, saveLlmSettings, clearLlmSettings, loadReviewCommentHeading, saveReviewCommentHeading, type LlmSettings } from "@/lib/client-settings";
 import Link from "next/link";
 
 type FieldConfig = {
@@ -411,6 +411,7 @@ export default function SettingsPage() {
     const [savedValues, setSavedValues] = useState<Record<string, string>>({});
     const [loading, setLoading] = useState(true);
     const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+    const [includeCommentHeading, setIncludeCommentHeading] = useState(true);
 
     const reloadFromStorage = useCallback(() => {
         const stored = loadLlmSettings();
@@ -423,7 +424,10 @@ export default function SettingsPage() {
     }, []);
 
     useEffect(() => {
-        if (!authLoading) reloadFromStorage();
+        if (!authLoading) {
+            reloadFromStorage();
+            setIncludeCommentHeading(loadReviewCommentHeading());
+        }
     }, [authLoading, reloadFromStorage]);
 
     const handleSave = () => {
@@ -585,6 +589,33 @@ export default function SettingsPage() {
                                         Clear All
                                     </button>
                                 </div>
+                            </section>
+
+                            <section className="rounded-xl border border-slate-200 bg-white/60 p-6 dark:border-slate-800 dark:bg-slate-950/40">
+                                <h2 className="mb-4 text-sm font-semibold text-slate-900 dark:text-slate-100">Review</h2>
+                                <label className="flex cursor-pointer items-start gap-3">
+                                    <input
+                                        type="checkbox"
+                                        className="mt-1"
+                                        checked={includeCommentHeading}
+                                        onChange={(e) => {
+                                            const next = e.target.checked;
+                                            setIncludeCommentHeading(next);
+                                            saveReviewCommentHeading(next);
+                                        }}
+                                    />
+                                    <span>
+                                        <span className="text-sm font-medium text-slate-800 dark:text-slate-200">
+                                            Include severity and title on GitHub comments
+                                        </span>
+                                        <span className="mt-1 block text-xs text-slate-600 dark:text-slate-400">
+                                            Turn off to post only the comment body. Example:{" "}
+                                            <code className="rounded bg-slate-200 px-1 py-0.5 font-mono text-[11px] text-slate-800 dark:bg-slate-800 dark:text-slate-200">
+                                                [Suggestion] Example title
+                                            </code>
+                                        </span>
+                                    </span>
+                                </label>
                             </section>
 
                             <AssignmentRulesSection user={user} />

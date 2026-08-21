@@ -40,19 +40,25 @@ function parseLine(raw?: string): { line?: number; start_line?: number } {
     return Number.isFinite(single) && single > 0 ? { line: single } : {};
 }
 
-function formatCommentBody(c: ReviewComment): string {
+function headingLine(c: ReviewComment, includeHeading: boolean): string | null {
+    if (!includeHeading) return null;
     const label = SEVERITY_EMOJI[c.severity] ?? "Comment";
-    const lines: string[] = [`**[${label}] ${c.title}**`, "", c.body];
+    return `**[${label}] ${c.title}**`;
+}
+
+function formatCommentBody(c: ReviewComment, includeHeading: boolean): string {
+    const heading = headingLine(c, includeHeading);
+    const lines: string[] = heading ? [heading, "", c.body] : [c.body];
     if (c.suggested_code) {
         lines.push("", "**Suggested:**", "```suggestion", c.suggested_code, "```");
     }
     return lines.join("\n");
 }
 
-function formatOrphanBody(c: ReviewComment): string {
-    const label = SEVERITY_EMOJI[c.severity] ?? "Comment";
+function formatOrphanBody(c: ReviewComment, includeHeading: boolean): string {
+    const heading = headingLine(c, includeHeading);
     const lines: string[] = [
-        `**[${label}] ${c.title}**`,
+        ...(heading ? [heading] : []),
         `> \`${c.file}\`${c.line ? ` (lines ${c.line})` : ""}`,
         "",
         c.body,
@@ -75,6 +81,7 @@ export async function POST(req: NextRequest) {
             summary?: string;
             verdict?: string;
             comments?: ReviewComment[];
+            includeCommentHeading?: boolean;
         };
 
         const owner = body.owner?.trim();
@@ -97,6 +104,7 @@ export async function POST(req: NextRequest) {
 
         const event = VERDICT_TO_EVENT[body.verdict ?? "comment"] ?? "COMMENT";
         const comments = body.comments;
+        const includeCommentHeading = body.includeCommentHeading !== false;
 
         const result = await withSessionOverrides(req, async (_llm) => {
             const diff = await getPullDiff(owner, repo, number);
@@ -114,7 +122,7 @@ export async function POST(req: NextRequest) {
                     if (snapped) {
                         const entry: { path: string; body: string; line: number; start_line?: number } = {
                             path: c.file,
-                            body: formatCommentBody(c),
+                            body: formatCommentBody(c, includeCommentHeading),
                             line: snapped,
                         };
                         if (start_line) {
@@ -128,7 +136,7 @@ export async function POST(req: NextRequest) {
                     }
                 }
 
-                orphanedComments.push({ path: c.file, body: formatOrphanBody(c) });
+                orphanedComments.push({ path: c.file, body: formatOrphanBody(c, includeCommentHeading) });
             }
 
             return submitPrReview(owner, repo, number, {
