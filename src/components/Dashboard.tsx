@@ -391,6 +391,8 @@ function ReviewCommentsView({
   onUpdateComment,
   onDeleteComment,
   onAddComment,
+  hiddenSeverities,
+  onHiddenSeveritiesChange,
 }: {
   summary: string;
   verdict: string;
@@ -401,6 +403,8 @@ function ReviewCommentsView({
   onUpdateComment: (index: number, c: ReviewCommentData) => void;
   onDeleteComment: (index: number) => void;
   onAddComment: (c: ReviewCommentData) => void;
+  hiddenSeverities: Set<string>;
+  onHiddenSeveritiesChange: (next: Set<string>) => void;
 }) {
   const [collapsedFiles, setCollapsedFiles] = useState<Set<string>>(new Set());
   const [commentSort, setCommentSort] = useState<CommentSort>("file");
@@ -425,6 +429,7 @@ function ReviewCommentsView({
   const fileGroups = useMemo(() => {
     const groups = new Map<string, ReviewCommentData[]>();
     for (const c of comments) {
+      if (hiddenSeverities.has(c.severity)) continue;
       const existing = groups.get(c.file) ?? [];
       existing.push(c);
       groups.set(c.file, existing);
@@ -449,7 +454,7 @@ function ReviewCommentsView({
       return criticalFirst ? ra - rb : rb - ra;
     });
     return entries;
-  }, [comments, commentSort]);
+  }, [comments, commentSort, hiddenSeverities]);
 
   const severityCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -506,14 +511,39 @@ function ReviewCommentsView({
           </div>
         )}
         <div className="flex flex-wrap items-center gap-2 border-t border-slate-200 pt-3 dark:border-slate-700/50">
-          {Object.entries(severityCounts).map(([sev, count]) => {
+          <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Show</span>
+          {SEVERITY_OPTIONS.filter((o) => severityCounts[o.value]).map((o) => {
+            const sev = o.value;
+            const count = severityCounts[sev];
             const cfg = SEVERITY_CONFIG[sev] ?? SEVERITY_CONFIG.suggestion;
+            const hidden = hiddenSeverities.has(sev);
             return (
-              <span key={sev} className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium ${cfg.cls}`}>
+              <button
+                key={sev}
+                type="button"
+                aria-pressed={!hidden}
+                title={hidden ? `Show ${cfg.label}` : `Hide ${cfg.label}`}
+                className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium ${cfg.cls} ${hidden ? "opacity-40" : ""}`}
+                onClick={() => {
+                  const next = new Set(hiddenSeverities);
+                  if (next.has(sev)) next.delete(sev);
+                  else next.add(sev);
+                  onHiddenSeveritiesChange(next);
+                }}
+              >
                 {cfg.label}: {count}
-              </span>
+              </button>
             );
           })}
+          {hiddenSeverities.size > 0 ? (
+            <button
+              type="button"
+              className="text-[11px] text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400"
+              onClick={() => onHiddenSeveritiesChange(new Set())}
+            >
+              Show all
+            </button>
+          ) : null}
           <label className="ml-auto flex items-center gap-1.5 text-[11px] text-slate-500">
             Sort
             <select
@@ -530,6 +560,9 @@ function ReviewCommentsView({
       </div>
 
       {/* File-grouped comments */}
+      {fileGroups.length === 0 && comments.length > 0 ? (
+        <p className="text-xs text-slate-500">No comments for the selected severities.</p>
+      ) : null}
       {fileGroups.map(([file, fileComments]) => {
         const isCollapsed = collapsedFiles.has(file);
         return (
@@ -1056,6 +1089,7 @@ export function Dashboard() {
   const [reviewLoadingFor, setReviewLoadingFor] = useState<number | null>(null);
   const [reviewError, setReviewError] = useState<string | null>(null);
   const [reviewData, setReviewData] = useState<ReviewData | null>(null);
+  const [hiddenSeverities, setHiddenSeverities] = useState<Set<string>>(new Set());
   const [includeCommentHeading, setIncludeCommentHeading] = useState(true);
   const [reviewPrompt, setReviewPrompt] = useState("");
   const [submitLoading, setSubmitLoading] = useState(false);
@@ -1272,6 +1306,7 @@ export function Dashboard() {
     setReviewLoadingFor(number);
     setReviewError(null);
     setReviewData(null);
+    setHiddenSeverities(new Set());
     setSubmitResult(null);
     try {
       const payload: Record<string, unknown> = { owner: owner.trim(), repo: repo.trim(), number };
@@ -1311,8 +1346,13 @@ export function Dashboard() {
     }
   };
 
+  const visibleReviewComments = useMemo(
+    () => (reviewData?.comments ?? []).filter((c) => !hiddenSeverities.has(c.severity)),
+    [reviewData?.comments, hiddenSeverities],
+  );
+
   const submitReviewToPr = async () => {
-    if (!reviewOpenFor || !reviewData?.comments?.length) return;
+    if (!reviewOpenFor || !visibleReviewComments.length) return;
     setSubmitLoading(true);
     setSubmitResult(null);
     try {
@@ -1323,9 +1363,9 @@ export function Dashboard() {
           owner: owner.trim(),
           repo: repo.trim(),
           number: reviewOpenFor,
-          summary: reviewData.summary,
-          verdict: reviewData.verdict,
-          comments: reviewData.comments,
+          summary: reviewData?.summary,
+          verdict: reviewData?.verdict,
+          comments: visibleReviewComments,
           includeCommentHeading,
         }),
       });
@@ -2330,7 +2370,7 @@ export function Dashboard() {
                 ) : null}
               </div>
               <div className="flex items-center gap-2">
-                {reviewData?.comments?.length ? (
+                {visibleReviewComments.length ? (
                   <button
                     type="button"
                     className="rounded-md border border-emerald-500 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-800 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200 dark:hover:bg-emerald-950/70"
@@ -2358,6 +2398,7 @@ export function Dashboard() {
                   onClick={() => {
                     setReviewOpenFor(null);
                     setReviewData(null);
+                    setHiddenSeverities(new Set());
                     setReviewError(null);
                     setSubmitResult(null);
                   }}
@@ -2413,6 +2454,8 @@ export function Dashboard() {
                   verdict={reviewData.verdict ?? "comment"}
                   comments={reviewData.comments}
                   includeCommentHeading={includeCommentHeading}
+                  hiddenSeverities={hiddenSeverities}
+                  onHiddenSeveritiesChange={setHiddenSeverities}
                   onUpdateSummary={(s) => { setSubmitResult(null); setReviewData((prev) => prev ? { ...prev, summary: s } : prev); }}
                   onUpdateVerdict={(v) => { setSubmitResult(null); setReviewData((prev) => prev ? { ...prev, verdict: v } : prev); }}
                   onUpdateComment={(idx, c) => {
