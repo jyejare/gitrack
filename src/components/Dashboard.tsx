@@ -588,13 +588,31 @@ function ReviewCommentsView({
                           </div>
                           {c.existing_code ? (
                             <div className="mt-2">
-                              <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Current code</div>
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Current code</div>
+                                <button
+                                  type="button"
+                                  className="text-[11px] text-slate-400 hover:text-rose-600 dark:hover:text-rose-400"
+                                  onClick={() => onUpdateComment(gIdx, { ...c, existing_code: undefined })}
+                                >
+                                  Remove
+                                </button>
+                              </div>
                               <DiffLines code={normalizeCodeNewlines(c.existing_code)} />
                             </div>
                           ) : null}
                           {c.suggested_code ? (
                             <div className="mt-2">
-                              <div className="text-[10px] font-medium uppercase tracking-wide text-emerald-600 dark:text-emerald-400">Suggested replacement</div>
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="text-[10px] font-medium uppercase tracking-wide text-emerald-600 dark:text-emerald-400">Suggested replacement</div>
+                                <button
+                                  type="button"
+                                  className="text-[11px] text-slate-400 hover:text-rose-600 dark:hover:text-rose-400"
+                                  onClick={() => onUpdateComment(gIdx, { ...c, suggested_code: undefined })}
+                                >
+                                  Remove
+                                </button>
+                              </div>
                               <DiffLines code={normalizeCodeNewlines(c.suggested_code)} />
                             </div>
                           ) : null}
