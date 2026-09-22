@@ -133,6 +133,50 @@ function prStatusBadge(p: PullRow): { label: string; cls: string } {
   return { label: "Not Ready", cls: "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200" };
 }
 
+/* ── Q&A types (from qa API) ──────────────────────────────────────────── */
+
+type QaMessage = { role: "user" | "assistant"; content: string };
+type QaThread = { messages: QaMessage[]; model?: string };
+
+const QA_STORAGE_PREFIX = "gitrack:qa:";
+
+function loadQaThread(owner: string, repo: string, number: number): QaThread {
+  if (typeof window === "undefined") return { messages: [] };
+  try {
+    const raw = localStorage.getItem(`${QA_STORAGE_PREFIX}${owner}/${repo}#${number}`);
+    return raw ? (JSON.parse(raw) as QaThread) : { messages: [] };
+  } catch {
+    return { messages: [] };
+  }
+}
+
+function saveQaThread(owner: string, repo: string, number: number, thread: QaThread): void {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(`${QA_STORAGE_PREFIX}${owner}/${repo}#${number}`, JSON.stringify(thread));
+}
+
+function clearQaThread(owner: string, repo: string, number: number): void {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(`${QA_STORAGE_PREFIX}${owner}/${repo}#${number}`);
+}
+
+function suggestedQuestions(
+  glance?: { summary?: string; walkthrough?: WalkthroughEntry[] },
+  insights?: { markdown?: string },
+): string[] {
+  const suggestions: string[] = [];
+  if (glance?.walkthrough?.length) {
+    suggestions.push("What is the riskiest change in this PR?");
+  }
+  suggestions.push("Does this PR violate any repo coding rules?");
+  suggestions.push("What tests should I run before approving?");
+  if (insights?.markdown) {
+    suggestions.push("Summarize the unresolved review comments");
+  }
+  suggestions.push("Explain the main purpose of this PR in one paragraph");
+  return suggestions;
+}
+
 /* ── Walkthrough types (from glance API) ─────────────────────────────── */
 
 type WalkthroughEntry = { file: string; change: string; summary: string; code?: string };
@@ -1081,6 +1125,11 @@ export function Dashboard() {
     Record<number, { loading: boolean; markdown?: string; error?: string }>
   >({});
 
+  const [qaByPr, setQaByPr] = useState<Record<number, QaThread>>({});
+  const [qaLoading, setQaLoading] = useState<number | null>(null);
+  const [qaInput, setQaInput] = useState("");
+  const [qaError, setQaError] = useState<string | null>(null);
+
   const [data, setData] = useState<PrsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1496,6 +1545,91 @@ export function Dashboard() {
       void runInsights(detailsOpenFor);
     }
   }, [aiMode, detailsOpenFor, glanceByPr, insightsByPr, runGlance, runInsights]);
+
+  // Load persisted Q&A thread when a PR row is expanded
+  useEffect(() => {
+    if (detailsOpenFor === null || !canLoad) return;
+    const existing = qaByPr[detailsOpenFor];
+    if (existing) return;
+    const saved = loadQaThread(owner.trim(), repo.trim(), detailsOpenFor);
+    if (saved.messages.length > 0) {
+      setQaByPr((prev) => ({ ...prev, [detailsOpenFor]: saved }));
+    }
+  }, [detailsOpenFor, canLoad, owner, repo, qaByPr]);
+
+  const runQa = useCallback(
+    async (number: number, question: string) => {
+      if (!canLoad || !aiMode || !question.trim()) return;
+      setQaLoading(number);
+      setQaError(null);
+
+      const prevThread = qaByPr[number] ?? { messages: [] };
+      const userMsg: QaMessage = { role: "user", content: question.trim() };
+      const updatedMessages = [...prevThread.messages, userMsg];
+      setQaByPr((prev) => ({ ...prev, [number]: { ...prevThread, messages: updatedMessages } }));
+
+      try {
+        const gl = glanceByPr[number];
+        const ins = insightsByPr[number];
+
+        const glanceSummary = gl?.summary
+          ? `${gl.summary}\n\n${(gl.walkthrough ?? []).map((w) => `- ${w.file} (${w.change}): ${w.summary}`).join("\n")}`
+          : "";
+
+        const payload: Record<string, unknown> = {
+          owner: owner.trim(),
+          repo: repo.trim(),
+          number,
+          question: question.trim(),
+          history: prevThread.messages,
+          glanceSummary,
+          reviewGuide: ins?.markdown ?? "",
+          repoRulesContext: selectedRulesText,
+        };
+
+        const res = await fetch("/api/qa", {
+          method: "POST",
+          headers: { "content-type": "application/json", ...getSessionHeaders() },
+          body: JSON.stringify(payload),
+        });
+
+        const contentType = res.headers.get("content-type") ?? "";
+        if (!contentType.includes("application/json")) {
+          throw new Error(`Failed to get answer (${res.status}) — server returned non-JSON (possible timeout or server restart needed)`);
+        }
+        const json = (await res.json()) as { model?: string; answer?: string; error?: string };
+        if (!res.ok) throw new Error(json.error ?? `Failed to get answer (${res.status})`);
+
+        const assistantMsg: QaMessage = { role: "assistant", content: json.answer ?? "" };
+        const finalThread: QaThread = {
+          messages: [...updatedMessages, assistantMsg],
+          model: json.model,
+        };
+        setQaByPr((prev) => ({ ...prev, [number]: finalThread }));
+        saveQaThread(owner.trim(), repo.trim(), number, finalThread);
+      } catch (e) {
+        setQaError(e instanceof Error ? e.message : "Failed to get answer");
+        // Remove the optimistic user message on failure
+        setQaByPr((prev) => ({ ...prev, [number]: prevThread }));
+      } finally {
+        setQaLoading(null);
+      }
+    },
+    [aiMode, canLoad, owner, repo, qaByPr, glanceByPr, insightsByPr, selectedRulesText],
+  );
+
+  const clearQa = useCallback(
+    (number: number) => {
+      setQaByPr((prev) => {
+        const next = { ...prev };
+        delete next[number];
+        return next;
+      });
+      if (canLoad) clearQaThread(owner.trim(), repo.trim(), number);
+      setQaError(null);
+    },
+    [canLoad, owner, repo],
+  );
 
   const availableReviewers = useMemo(() => {
     const set = new Set<string>();
@@ -2258,6 +2392,7 @@ export function Dashboard() {
                               </div>
 
                               {aiMode ? (
+                                <>
                                 <div className="grid gap-3 md:grid-cols-2">
                                   {/* Left: At a glance */}
                                   <div className="rounded-lg border border-slate-200 bg-white/60 p-3 dark:border-slate-800 dark:bg-slate-950/40">
@@ -2333,6 +2468,124 @@ export function Dashboard() {
                                     ) : null}
                                   </div>
                                 </div>
+
+                                {/* Ask this PR — Q&A panel */}
+                                {(() => {
+                                  const qa = qaByPr[p.number];
+                                  const messages = qa?.messages ?? [];
+                                  const isLoading = qaLoading === p.number;
+                                  const chips = suggestedQuestions(gl, ins);
+                                  return (
+                                    <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50/30 p-3 dark:border-indigo-800/60 dark:bg-indigo-950/20">
+                                      <div className="flex items-center justify-between">
+                                        <h3 className="bg-gradient-to-r from-indigo-500 via-violet-500 to-indigo-500 bg-clip-text text-sm font-bold uppercase tracking-wide text-transparent dark:from-indigo-400 dark:via-violet-300 dark:to-indigo-400">
+                                          Ask this PR
+                                        </h3>
+                                        {messages.length > 0 ? (
+                                          <button
+                                            type="button"
+                                            className="text-[11px] font-medium text-slate-400 hover:text-rose-500 dark:hover:text-rose-400"
+                                            onClick={() => clearQa(p.number)}
+                                          >
+                                            Clear thread
+                                          </button>
+                                        ) : null}
+                                      </div>
+
+                                      {/* Conversation thread */}
+                                      {messages.length > 0 ? (
+                                        <div className="mt-2 flex max-h-72 flex-col gap-2 overflow-y-auto">
+                                          {messages.map((m, idx) => (
+                                            <div
+                                              key={idx}
+                                              className={`rounded-md px-3 py-2 text-sm ${
+                                                m.role === "user"
+                                                  ? "ml-8 border border-indigo-200 bg-indigo-100/60 text-slate-800 dark:border-indigo-700 dark:bg-indigo-950/40 dark:text-slate-200"
+                                                  : "mr-8 border border-slate-200 bg-white/80 dark:border-slate-700 dark:bg-slate-900/60"
+                                              }`}
+                                            >
+                                              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                                                {m.role === "user" ? "You" : `AI${qa?.model ? ` · ${qa.model}` : ""}`}
+                                              </div>
+                                              {m.role === "assistant" ? (
+                                                <MarkdownBody text={m.content} />
+                                              ) : (
+                                                <p className="whitespace-pre-wrap">{m.content}</p>
+                                              )}
+                                              {m.role === "assistant" ? (
+                                                <button
+                                                  type="button"
+                                                  className="mt-1 text-[10px] text-slate-400 hover:text-indigo-500"
+                                                  onClick={() => void navigator.clipboard.writeText(m.content)}
+                                                  title="Copy answer"
+                                                >
+                                                  Copy
+                                                </button>
+                                              ) : null}
+                                            </div>
+                                          ))}
+                                          {isLoading ? (
+                                            <div className="mr-8 rounded-md border border-slate-200 bg-white/80 px-3 py-2 text-xs text-slate-400 dark:border-slate-700 dark:bg-slate-900/60">
+                                              Thinking…
+                                            </div>
+                                          ) : null}
+                                        </div>
+                                      ) : null}
+
+                                      {qaError ? (
+                                        <p className="mt-2 rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-xs text-rose-800 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-100">
+                                          {qaError}
+                                        </p>
+                                      ) : null}
+
+                                      {/* Suggested questions (only when no messages yet) */}
+                                      {messages.length === 0 ? (
+                                        <div className="mt-2 flex flex-wrap gap-1.5">
+                                          {chips.map((q) => (
+                                            <button
+                                              key={q}
+                                              type="button"
+                                              className="rounded-full border border-indigo-200 bg-white px-2.5 py-1 text-[11px] text-indigo-700 hover:bg-indigo-100 disabled:opacity-40 dark:border-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-300 dark:hover:bg-indigo-900/50"
+                                              disabled={isLoading}
+                                              onClick={() => void runQa(p.number, q)}
+                                            >
+                                              {q}
+                                            </button>
+                                          ))}
+                                        </div>
+                                      ) : null}
+
+                                      {/* Input */}
+                                      <form
+                                        className="mt-2 flex gap-2"
+                                        onSubmit={(e) => {
+                                          e.preventDefault();
+                                          if (!qaInput.trim() || isLoading) return;
+                                          const q = qaInput;
+                                          setQaInput("");
+                                          void runQa(p.number, q);
+                                        }}
+                                      >
+                                        <input
+                                          type="text"
+                                          className="flex-1 rounded-md border border-indigo-200 bg-white px-3 py-1.5 text-sm outline-none ring-indigo-500/40 placeholder:text-slate-400 focus:border-indigo-400 focus:ring-2 dark:border-indigo-700 dark:bg-slate-950 dark:text-slate-200 dark:placeholder:text-slate-600"
+                                          placeholder="Ask a question about this PR…"
+                                          value={qaInput}
+                                          onChange={(e) => setQaInput(e.target.value)}
+                                          disabled={isLoading}
+                                        />
+                                        <button
+                                          type="submit"
+                                          className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40"
+                                          disabled={isLoading || !qaInput.trim()}
+                                        >
+                                          Ask
+                                        </button>
+                                      </form>
+                                    </div>
+                                  );
+                                })()}
+                                </>
                               ) : (
                                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-950/30 dark:text-slate-400">
                                   Enable AI mode to generate glance and reviewer insights for this PR.

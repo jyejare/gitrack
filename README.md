@@ -17,6 +17,7 @@ https://github.com/user-attachments/assets/3610525f-c552-47ab-a0c9-b785b70a89ae
 - **Repo rules/skills** — reads `.cursorrules`, `.cursor/rules`, `.claude` rules/skills from the repository and includes them in AI reviews
 - **Editable AI review** — edit the AI-generated review summary before submitting to GitHub
 - **PR auto-assignment** — rule-based reviewer assignment by PR size (XS–XXL) and title keywords; configured per repo in Settings
+- **Ask this PR** — interactive Q&A chat per PR, powered by the configured LLM; answers grounded in the diff, PR description, discussion comments, CI checks, glance summary, and repo rules with `file:line` citations
 - **Cross-repo search** — search by PR number or title text across all pages (uses GitHub Search API)
 - **Repo bookmarks** — save and switch between frequently used repositories
 - **Light / Dark mode** — toggle between themes; persists preference
@@ -221,6 +222,7 @@ git push origin v0.4.0
 | `POST` | `/api/review` | Full LLM PR review. Body: `{ owner, repo, number }` |
 | `POST` | `/api/review/submit` | Submit review to GitHub. Body: `{ owner, repo, number, summary, verdict, comments }` |
 | `POST` | `/api/insights` | Review Guide generation. Body: `{ owner, repo, number }` |
+| `POST` | `/api/qa` | Ask a question about a PR. Body: `{ owner, repo, number, question, history?, glanceSummary?, reviewGuide?, repoRulesContext? }` |
 | `POST` | `/api/glance` | At-a-glance code summary. Body: `{ owner, repo, number }` |
 | `GET` | `/api/repo-rules` | Fetch repository rules/skills. Params: `owner`, `repo`. |
 | `GET` | `/api/metrics` | Repository metrics. Params: `owner`, `repo`, `days`. |
