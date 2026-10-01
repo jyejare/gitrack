@@ -862,16 +862,63 @@ function summarizeReviews(reviews: ReviewItem[]) {
 type MetricsData = {
   period: { days: number; since: string };
   counts: { totalOpen: number; mergedInPeriod: number; closedInPeriod: number; createdInPeriod: number };
-  averages: { mergeTimeHours: number; openAgeDays: number };
+  averages: { mergeTimeHours: number; medianMergeTimeHours: number; openAgeDays: number; reviewTurnaroundHours: number };
+  rates: { approvalRate: number; closedWithoutMergeRate: number; ciPassRate: number | null };
   throughput: Array<{ week: string; opened: number; merged: number }>;
   sizeDistribution: Array<{ size: string; count: number }>;
+  labelDistribution: Array<{ label: string; count: number }>;
+  mergeFunnel: { medianToFirstReviewHours: number; medianFirstReviewToMergeHours: number; medianTotalMergeHours: number };
+  reviewerWorkload: Array<{ reviewer: string; count: number }>;
+  stalePrs: Array<{ number: number; title: string; author: string; ageDays: number }>;
+  contributors: Array<{ login: string; created: number; merged: number; reviewed: number }>;
 };
+
+function formatHours(h: number): string {
+  if (h === 0) return "0h";
+  if (h < 1) return `${Math.round(h * 60)}m`;
+  if (h < 24) return `${h}h`;
+  return `${Math.round(h / 24)}d`;
+}
+
+function MetricCard({ label, value, tone, subtitle }: { label: string; value: string; tone: string; subtitle?: string }) {
+  return (
+    <div className="flex flex-col items-center rounded-xl border border-slate-200 bg-white/80 px-3 py-4 dark:border-slate-800 dark:bg-slate-900/50">
+      <span className={`text-2xl font-bold ${tone}`}>{value}</span>
+      <span className="mt-1 text-center text-[10px] font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">{label}</span>
+      {subtitle && <span className="text-[9px] text-slate-400 dark:text-slate-500">{subtitle}</span>}
+    </div>
+  );
+}
+
+function HorizontalBar({ items, colorMap, fallbackColor = "bg-slate-400" }: {
+  items: Array<{ key: string; count: number }>;
+  colorMap?: Record<string, string>;
+  fallbackColor?: string;
+}) {
+  const total = items.reduce((s, b) => s + b.count, 0) || 1;
+  return (
+    <div className="flex flex-col gap-1.5">
+      {items.map((b) => (
+        <div key={b.key} className="flex items-center gap-2">
+          <span className="w-14 truncate text-xs font-semibold text-slate-600 dark:text-slate-400" title={b.key}>{b.key}</span>
+          <div className="flex-1">
+            <div className="h-3 rounded-full bg-slate-200 dark:bg-slate-800">
+              <div className={`h-3 rounded-full ${colorMap?.[b.key] ?? fallbackColor}`} style={{ width: `${Math.max((b.count / total) * 100, 2)}%` }} />
+            </div>
+          </div>
+          <span className="w-14 text-right text-[10px] text-slate-500">{b.count} ({Math.round((b.count / total) * 100)}%)</span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function MetricsPanel({ owner, repo }: { owner: string; repo: string }) {
   const [metricsData, setMetricsData] = useState<MetricsData | null>(null);
   const [metricsLoading, setMetricsLoading] = useState(false);
   const [metricsError, setMetricsError] = useState<string | null>(null);
   const [days, setDays] = useState(30);
+  const [metricsTab, setMetricsTab] = useState<"overview" | "reviews" | "contributors" | "health">("overview");
 
   const fetchMetrics = useCallback(async () => {
     if (!owner || !repo) return;
@@ -914,15 +961,6 @@ function MetricsPanel({ owner, repo }: { owner: string; repo: string }) {
 
   const d = metricsData;
   const maxThroughput = Math.max(...d.throughput.flatMap((w) => [w.opened, w.merged]), 1);
-  const totalSize = d.sizeDistribution.reduce((s, b) => s + b.count, 0) || 1;
-
-  const cards = [
-    { label: "Open PRs", value: String(d.counts.totalOpen), tone: "text-slate-900 dark:text-slate-100" },
-    { label: `Created (${days}d)`, value: String(d.counts.createdInPeriod), tone: "text-blue-700 dark:text-blue-300" },
-    { label: `Merged (${days}d)`, value: String(d.counts.mergedInPeriod), tone: "text-emerald-700 dark:text-emerald-300" },
-    { label: "Avg Merge Time", value: d.averages.mergeTimeHours < 24 ? `${d.averages.mergeTimeHours}h` : `${Math.round(d.averages.mergeTimeHours / 24)}d`, tone: "text-violet-700 dark:text-violet-300" },
-    { label: "Avg Open Age", value: `${d.averages.openAgeDays}d`, tone: d.averages.openAgeDays > 14 ? "text-amber-700 dark:text-amber-300" : "text-slate-700 dark:text-slate-300" },
-  ];
 
   const SIZE_COLORS: Record<string, string> = {
     XS: "bg-emerald-500",
@@ -932,8 +970,16 @@ function MetricsPanel({ owner, repo }: { owner: string; repo: string }) {
     XL: "bg-rose-500",
   };
 
+  const TABS = [
+    { key: "overview" as const, label: "Overview" },
+    { key: "reviews" as const, label: "Reviews" },
+    { key: "contributors" as const, label: "Contributors" },
+    { key: "health" as const, label: "Health" },
+  ];
+
   return (
     <div className="flex flex-col gap-4 rounded-xl border border-violet-200 bg-violet-50/20 p-4 dark:border-violet-800/50 dark:bg-violet-950/10">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-bold uppercase tracking-wide text-violet-700 dark:text-violet-300">Repository Metrics</h3>
         <div className="flex items-center gap-2">
@@ -952,56 +998,250 @@ function MetricsPanel({ owner, repo }: { owner: string; repo: string }) {
         </div>
       </div>
 
-      <div className="grid grid-cols-5 gap-3">
-        {cards.map((c) => (
-          <div key={c.label} className="flex flex-col items-center rounded-xl border border-slate-200 bg-white/80 px-3 py-4 dark:border-slate-800 dark:bg-slate-900/50">
-            <span className={`text-2xl font-bold ${c.tone}`}>{c.value}</span>
-            <span className="mt-1 text-center text-[10px] font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">{c.label}</span>
-          </div>
+      {/* Tab bar */}
+      <div className="flex gap-1 rounded-lg border border-slate-200 bg-slate-100 p-0.5 dark:border-slate-700 dark:bg-slate-900">
+        {TABS.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => setMetricsTab(t.key)}
+            className={`flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
+              metricsTab === t.key
+                ? "bg-white text-violet-700 shadow-sm dark:bg-slate-800 dark:text-violet-300"
+                : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+            }`}
+          >
+            {t.label}
+          </button>
         ))}
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2">
-        {/* Throughput chart */}
-        <div className="rounded-lg border border-slate-200 bg-white/60 p-3 dark:border-slate-800 dark:bg-slate-950/40">
-          <h4 className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Weekly Throughput</h4>
-          {d.throughput.length > 0 ? (
-            <div className="flex items-end gap-1" style={{ height: 100 }}>
-              {d.throughput.map((w) => (
-                <div key={w.week} className="flex flex-1 flex-col items-center gap-0.5">
-                  <div className="flex w-full items-end justify-center gap-px" style={{ height: 80 }}>
-                    <div className="w-2 rounded-t bg-blue-400 dark:bg-blue-500" style={{ height: `${(w.opened / maxThroughput) * 100}%`, minHeight: w.opened > 0 ? 4 : 0 }} title={`Opened: ${w.opened}`} />
-                    <div className="w-2 rounded-t bg-emerald-400 dark:bg-emerald-500" style={{ height: `${(w.merged / maxThroughput) * 100}%`, minHeight: w.merged > 0 ? 4 : 0 }} title={`Merged: ${w.merged}`} />
-                  </div>
-                  <span className="text-[8px] text-slate-400">{w.week.slice(5)}</span>
-                </div>
-              ))}
-            </div>
-          ) : <p className="text-xs text-slate-400">No data</p>}
-          <div className="mt-2 flex items-center gap-3 text-[9px] text-slate-400">
-            <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm bg-blue-400" /> Opened</span>
-            <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm bg-emerald-400" /> Merged</span>
+      {/* Overview tab */}
+      {metricsTab === "overview" && (
+        <>
+          {/* Summary cards — top row */}
+          <div className="grid grid-cols-4 gap-3 sm:grid-cols-8">
+            <MetricCard label="Open PRs" value={String(d.counts.totalOpen)} tone="text-slate-900 dark:text-slate-100" />
+            <MetricCard label={`Created (${days}d)`} value={String(d.counts.createdInPeriod)} tone="text-blue-700 dark:text-blue-300" />
+            <MetricCard label={`Merged (${days}d)`} value={String(d.counts.mergedInPeriod)} tone="text-emerald-700 dark:text-emerald-300" />
+            <MetricCard label={`Closed (${days}d)`} value={String(d.counts.closedInPeriod)} tone="text-slate-600 dark:text-slate-400" subtitle={`${d.rates.closedWithoutMergeRate}% abandon`} />
+            <MetricCard label="Avg Merge" value={formatHours(d.averages.mergeTimeHours)} tone="text-violet-700 dark:text-violet-300" />
+            <MetricCard label="Median Merge" value={formatHours(d.averages.medianMergeTimeHours)} tone="text-violet-700 dark:text-violet-300" />
+            <MetricCard label="Avg Open Age" value={`${d.averages.openAgeDays}d`} tone={d.averages.openAgeDays > 14 ? "text-amber-700 dark:text-amber-300" : "text-slate-700 dark:text-slate-300"} />
+            <MetricCard label="Review Pickup" value={formatHours(d.averages.reviewTurnaroundHours)} tone="text-cyan-700 dark:text-cyan-300" />
           </div>
-        </div>
 
-        {/* Size distribution */}
-        <div className="rounded-lg border border-slate-200 bg-white/60 p-3 dark:border-slate-800 dark:bg-slate-950/40">
-          <h4 className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">PR Size Distribution</h4>
-          <div className="flex flex-col gap-1.5">
-            {d.sizeDistribution.map((b) => (
-              <div key={b.size} className="flex items-center gap-2">
-                <span className="w-8 text-xs font-semibold text-slate-600 dark:text-slate-400">{b.size}</span>
-                <div className="flex-1">
-                  <div className="h-3 rounded-full bg-slate-200 dark:bg-slate-800">
-                    <div className={`h-3 rounded-full ${SIZE_COLORS[b.size] ?? "bg-slate-400"}`} style={{ width: `${(b.count / totalSize) * 100}%` }} />
-                  </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            {/* Throughput chart */}
+            <div className="rounded-lg border border-slate-200 bg-white/60 p-3 dark:border-slate-800 dark:bg-slate-950/40">
+              <h4 className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Weekly Throughput</h4>
+              {d.throughput.length > 0 ? (
+                <div className="flex items-end gap-1" style={{ height: 100 }}>
+                  {d.throughput.map((w) => (
+                    <div key={w.week} className="flex flex-1 flex-col items-center gap-0.5">
+                      <div className="flex w-full items-end justify-center gap-px" style={{ height: 80 }}>
+                        <div className="w-2 rounded-t bg-blue-400 dark:bg-blue-500" style={{ height: `${(w.opened / maxThroughput) * 100}%`, minHeight: w.opened > 0 ? 4 : 0 }} title={`Opened: ${w.opened}`} />
+                        <div className="w-2 rounded-t bg-emerald-400 dark:bg-emerald-500" style={{ height: `${(w.merged / maxThroughput) * 100}%`, minHeight: w.merged > 0 ? 4 : 0 }} title={`Merged: ${w.merged}`} />
+                      </div>
+                      <span className="text-[8px] text-slate-400">{w.week.slice(5)}</span>
+                    </div>
+                  ))}
                 </div>
-                <span className="w-10 text-right text-[10px] text-slate-500">{b.count} ({Math.round((b.count / totalSize) * 100)}%)</span>
+              ) : <p className="text-xs text-slate-400">No data</p>}
+              <div className="mt-2 flex items-center gap-3 text-[9px] text-slate-400">
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm bg-blue-400" /> Opened</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm bg-emerald-400" /> Merged</span>
               </div>
-            ))}
+            </div>
+
+            {/* Size distribution */}
+            <div className="rounded-lg border border-slate-200 bg-white/60 p-3 dark:border-slate-800 dark:bg-slate-950/40">
+              <h4 className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">PR Size Distribution</h4>
+              <HorizontalBar
+                items={d.sizeDistribution.map((b) => ({ key: b.size, count: b.count }))}
+                colorMap={SIZE_COLORS}
+              />
+            </div>
           </div>
-        </div>
-      </div>
+
+          {/* Merge funnel */}
+          <div className="rounded-lg border border-slate-200 bg-white/60 p-3 dark:border-slate-800 dark:bg-slate-950/40">
+            <h4 className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Merge Funnel (Median)</h4>
+            <div className="flex items-center gap-2">
+              {[
+                { label: "Created", color: "bg-blue-500" },
+                { label: `→ First Review (${formatHours(d.mergeFunnel.medianToFirstReviewHours)})`, color: "bg-cyan-500" },
+                { label: `→ Merged (${formatHours(d.mergeFunnel.medianFirstReviewToMergeHours)})`, color: "bg-emerald-500" },
+              ].map((step, i) => {
+                const widths = [100, 70, 40];
+                return (
+                  <div key={step.label} className="flex flex-1 flex-col items-center gap-1">
+                    <div className={`${step.color} rounded-md`} style={{ height: 28, width: `${widths[i]}%`, minWidth: 20 }} />
+                    <span className="text-center text-[9px] text-slate-500">{step.label}</span>
+                  </div>
+                );
+              })}
+            </div>
+            <p className="mt-2 text-center text-[10px] text-slate-400">
+              Total median: {formatHours(d.mergeFunnel.medianTotalMergeHours)}
+            </p>
+          </div>
+
+          {/* Label distribution */}
+          {d.labelDistribution.length > 0 && (
+            <div className="rounded-lg border border-slate-200 bg-white/60 p-3 dark:border-slate-800 dark:bg-slate-950/40">
+              <h4 className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Label Distribution</h4>
+              <div className="flex flex-wrap gap-1.5">
+                {d.labelDistribution.map((l) => (
+                  <span key={l.label} className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+                    {l.label}
+                    <span className="rounded-full bg-violet-100 px-1.5 text-[9px] font-bold text-violet-700 dark:bg-violet-900 dark:text-violet-300">{l.count}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Reviews tab */}
+      {metricsTab === "reviews" && (
+        <>
+          <div className="grid grid-cols-3 gap-3">
+            <MetricCard label="Approval Rate" value={`${d.rates.approvalRate}%`} tone={d.rates.approvalRate >= 80 ? "text-emerald-700 dark:text-emerald-300" : d.rates.approvalRate >= 50 ? "text-amber-700 dark:text-amber-300" : "text-rose-700 dark:text-rose-300"} subtitle="Approved w/o changes" />
+            <MetricCard label="Avg 1st Review" value={formatHours(d.averages.reviewTurnaroundHours)} tone="text-cyan-700 dark:text-cyan-300" subtitle="Time to first review" />
+            <MetricCard label="Median Merge" value={formatHours(d.averages.medianMergeTimeHours)} tone="text-violet-700 dark:text-violet-300" subtitle="Median time to merge" />
+          </div>
+
+          {/* Merge funnel */}
+          <div className="rounded-lg border border-slate-200 bg-white/60 p-3 dark:border-slate-800 dark:bg-slate-950/40">
+            <h4 className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Time Breakdown (Median)</h4>
+            <div className="flex flex-col gap-2">
+              {[
+                { label: "Created → First Review", hours: d.mergeFunnel.medianToFirstReviewHours, color: "bg-cyan-500" },
+                { label: "First Review → Merged", hours: d.mergeFunnel.medianFirstReviewToMergeHours, color: "bg-emerald-500" },
+              ].map((step) => {
+                const maxH = Math.max(d.mergeFunnel.medianToFirstReviewHours, d.mergeFunnel.medianFirstReviewToMergeHours, 1);
+                return (
+                  <div key={step.label} className="flex items-center gap-2">
+                    <span className="w-40 text-[10px] text-slate-500">{step.label}</span>
+                    <div className="flex-1">
+                      <div className="h-4 rounded-full bg-slate-200 dark:bg-slate-800">
+                        <div className={`h-4 rounded-full ${step.color}`} style={{ width: `${Math.max((step.hours / maxH) * 100, 3)}%` }} />
+                      </div>
+                    </div>
+                    <span className="w-12 text-right text-xs font-semibold text-slate-600 dark:text-slate-400">{formatHours(step.hours)}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Reviewer workload */}
+          {d.reviewerWorkload.length > 0 && (
+            <div className="rounded-lg border border-slate-200 bg-white/60 p-3 dark:border-slate-800 dark:bg-slate-950/40">
+              <h4 className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Reviewer Workload</h4>
+              <HorizontalBar
+                items={d.reviewerWorkload.map((r) => ({ key: r.reviewer, count: r.count }))}
+                fallbackColor="bg-cyan-500"
+              />
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Contributors tab */}
+      {metricsTab === "contributors" && (
+        <>
+          {d.contributors.length > 0 ? (
+            <div className="rounded-lg border border-slate-200 bg-white/60 p-3 dark:border-slate-800 dark:bg-slate-950/40">
+              <h4 className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Top Contributors</h4>
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-200 dark:border-slate-700">
+                      <th className="py-1.5 pr-3 text-left font-semibold text-slate-500">Author</th>
+                      <th className="px-3 py-1.5 text-right font-semibold text-blue-600 dark:text-blue-400">Created</th>
+                      <th className="px-3 py-1.5 text-right font-semibold text-emerald-600 dark:text-emerald-400">Merged</th>
+                      <th className="px-3 py-1.5 text-right font-semibold text-cyan-600 dark:text-cyan-400">Reviewed</th>
+                      <th className="pl-3 py-1.5 text-right font-semibold text-slate-500">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {d.contributors.map((c) => (
+                      <tr key={c.login} className="border-b border-slate-100 dark:border-slate-800">
+                        <td className="py-1.5 pr-3 font-medium text-slate-700 dark:text-slate-300">{c.login}</td>
+                        <td className="px-3 py-1.5 text-right text-blue-700 dark:text-blue-300">{c.created}</td>
+                        <td className="px-3 py-1.5 text-right text-emerald-700 dark:text-emerald-300">{c.merged}</td>
+                        <td className="px-3 py-1.5 text-right text-cyan-700 dark:text-cyan-300">{c.reviewed}</td>
+                        <td className="pl-3 py-1.5 text-right font-bold text-slate-800 dark:text-slate-200">{c.created + c.merged + c.reviewed}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : (
+            <p className="text-center text-xs text-slate-400">No contributor data available</p>
+          )}
+        </>
+      )}
+
+      {/* Health tab */}
+      {metricsTab === "health" && (
+        <>
+          <div className="grid grid-cols-3 gap-3">
+            <MetricCard
+              label="CI Pass Rate"
+              value={d.rates.ciPassRate !== null ? `${d.rates.ciPassRate}%` : "N/A"}
+              tone={d.rates.ciPassRate === null ? "text-slate-400" : d.rates.ciPassRate >= 80 ? "text-emerald-700 dark:text-emerald-300" : d.rates.ciPassRate >= 50 ? "text-amber-700 dark:text-amber-300" : "text-rose-700 dark:text-rose-300"}
+              subtitle="All checks green"
+            />
+            <MetricCard
+              label="Abandon Rate"
+              value={`${d.rates.closedWithoutMergeRate}%`}
+              tone={d.rates.closedWithoutMergeRate > 20 ? "text-amber-700 dark:text-amber-300" : "text-slate-700 dark:text-slate-300"}
+              subtitle="Closed without merge"
+            />
+            <MetricCard
+              label="Stale PRs"
+              value={String(d.stalePrs.length)}
+              tone={d.stalePrs.length > 5 ? "text-rose-700 dark:text-rose-300" : d.stalePrs.length > 0 ? "text-amber-700 dark:text-amber-300" : "text-emerald-700 dark:text-emerald-300"}
+              subtitle=">14 days idle"
+            />
+          </div>
+
+          {/* Stale PRs list */}
+          {d.stalePrs.length > 0 && (
+            <div className="rounded-lg border border-slate-200 bg-white/60 p-3 dark:border-slate-800 dark:bg-slate-950/40">
+              <h4 className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Stale Open PRs</h4>
+              <div className="flex flex-col gap-1.5">
+                {d.stalePrs.map((p) => (
+                  <div key={p.number} className="flex items-center gap-2 rounded-md border border-slate-100 bg-white px-2.5 py-1.5 dark:border-slate-800 dark:bg-slate-950/50">
+                    <span className="text-xs font-bold text-slate-400">#{p.number}</span>
+                    <span className="flex-1 truncate text-xs text-slate-700 dark:text-slate-300">{p.title}</span>
+                    <span className="text-[10px] text-slate-400">{p.author}</span>
+                    <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-bold ${
+                      p.ageDays > 30 ? "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300" : "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+                    }`}>{p.ageDays}d</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Label distribution (also shown in health) */}
+          {d.labelDistribution.length > 0 && (
+            <div className="rounded-lg border border-slate-200 bg-white/60 p-3 dark:border-slate-800 dark:bg-slate-950/40">
+              <h4 className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">PR Categories (Labels)</h4>
+              <HorizontalBar
+                items={d.labelDistribution.map((l) => ({ key: l.label, count: l.count }))}
+                fallbackColor="bg-violet-500"
+              />
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
