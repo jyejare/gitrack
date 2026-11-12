@@ -60,13 +60,13 @@ Your token is encrypted and stored in an HTTP-only cookie — it is never expose
 
 ### Prerequisites
 
-- **Node.js 20+** — install from [nodejs.org](https://nodejs.org)
+- **Node.js 22.13+** — install from [nodejs.org](https://nodejs.org)
 - A **GitHub PAT** with repo read access (see [Authentication](#authentication))
 
 ### Quick start
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
