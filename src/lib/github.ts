@@ -131,6 +131,34 @@ export async function listPullReviews(owner: string, repo: string, number: numbe
   return (await res.json()) as ReviewItem[];
 }
 
+export type IssueComment = {
+  user: { login: string } | null;
+  body: string;
+  created_at: string;
+};
+
+export async function listIssueComments(owner: string, repo: string, number: number): Promise<IssueComment[]> {
+  const res = await githubFetch(
+    `/repos/${owner}/${repo}/issues/${number}/comments?per_page=50&sort=created&direction=asc`,
+  );
+  return (await res.json()) as IssueComment[];
+}
+
+export type ReviewComment = {
+  user: { login: string } | null;
+  body: string;
+  path: string;
+  line: number | null;
+  created_at: string;
+};
+
+export async function listReviewComments(owner: string, repo: string, number: number): Promise<ReviewComment[]> {
+  const res = await githubFetch(
+    `/repos/${owner}/${repo}/pulls/${number}/comments?per_page=50&sort=created&direction=asc`,
+  );
+  return (await res.json()) as ReviewComment[];
+}
+
 export type CheckRun = {
   name: string;
   status: "queued" | "in_progress" | "completed" | string;

@@ -3,6 +3,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { X, MessageSquare, Send, Loader2, Copy, Trash2, HelpCircle } from "lucide-react";
 import { useAiMode } from "@/components/AiModeContext";
 import { useMetrics } from "@/components/MetricsContext";
 import {
@@ -131,6 +132,50 @@ function prStatusBadge(p: PullRow): { label: string; cls: string } {
   if (isReviewReady(p))
     return { label: "Ready", cls: "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200" };
   return { label: "Not Ready", cls: "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200" };
+}
+
+/* ── Q&A types (from qa API) ──────────────────────────────────────────── */
+
+type QaMessage = { role: "user" | "assistant"; content: string };
+type QaThread = { messages: QaMessage[]; model?: string };
+
+const QA_STORAGE_PREFIX = "gitrack:qa:";
+
+function loadQaThread(owner: string, repo: string, number: number): QaThread {
+  if (typeof window === "undefined") return { messages: [] };
+  try {
+    const raw = localStorage.getItem(`${QA_STORAGE_PREFIX}${owner}/${repo}#${number}`);
+    return raw ? (JSON.parse(raw) as QaThread) : { messages: [] };
+  } catch {
+    return { messages: [] };
+  }
+}
+
+function saveQaThread(owner: string, repo: string, number: number, thread: QaThread): void {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(`${QA_STORAGE_PREFIX}${owner}/${repo}#${number}`, JSON.stringify(thread));
+}
+
+function clearQaThread(owner: string, repo: string, number: number): void {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(`${QA_STORAGE_PREFIX}${owner}/${repo}#${number}`);
+}
+
+function suggestedQuestions(
+  glance?: { summary?: string; walkthrough?: WalkthroughEntry[] },
+  insights?: { markdown?: string },
+): string[] {
+  const suggestions: string[] = [];
+  if (glance?.walkthrough?.length) {
+    suggestions.push("What is the riskiest change in this PR?");
+  }
+  suggestions.push("Does this PR violate any repo coding rules?");
+  suggestions.push("What tests should I run before approving?");
+  if (insights?.markdown) {
+    suggestions.push("Summarize the unresolved review comments");
+  }
+  suggestions.push("Explain the main purpose of this PR in one paragraph");
+  return suggestions;
 }
 
 /* ── Walkthrough types (from glance API) ─────────────────────────────── */
@@ -793,6 +838,199 @@ function InsightsView({ markdown }: { markdown: string }) {
   );
 }
 
+/* ── Ask Me Modal (Q&A) ────────────────────────────────────────────── */
+
+interface AskMeModalProps {
+  qaOpenFor: number | null;
+  setQaOpenFor: (n: number | null) => void;
+  qaByPr: Record<number, QaThread>;
+  qaLoading: number | null;
+  qaInput: string;
+  setQaInput: (v: string) => void;
+  qaError: string | null;
+  data: PrsResponse | null;
+  glanceByPr: Record<number, GlanceData>;
+  insightsByPr: Record<number, { loading: boolean; markdown?: string; error?: string }>;
+  runQa: (number: number, question: string) => void;
+  clearQa: (number: number) => void;
+}
+
+function AskMeModal({
+  qaOpenFor,
+  setQaOpenFor,
+  qaByPr,
+  qaLoading,
+  qaInput,
+  setQaInput,
+  qaError,
+  data,
+  glanceByPr,
+  insightsByPr,
+  runQa,
+  clearQa,
+}: AskMeModalProps) {
+  if (qaOpenFor === null) return null;
+
+  const openPrNumber = qaOpenFor as number;
+  const qaThread = qaByPr[openPrNumber];
+  const qaMessages = qaThread?.messages ?? [];
+  const qaIsLoading = qaLoading === openPrNumber;
+  const currentPr = data?.pulls?.find((p) => p.number === openPrNumber);
+  const prTitle = currentPr?.title ?? `PR #${openPrNumber}`;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setQaOpenFor(null)}>
+      <div className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl dark:border-slate-800 dark:bg-slate-950" onClick={(e) => e.stopPropagation()}>
+        <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-slate-800">
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center justify-center rounded-full bg-indigo-100 p-1.5 text-indigo-600 dark:bg-indigo-900/40 dark:text-indigo-400">
+              <MessageSquare className="h-5 w-5" />
+            </span>
+            <div>
+              <h3 className="text-sm font-medium text-slate-900 dark:text-slate-100">Ask Me</h3>
+              <p className="text-[11px] text-slate-500 truncate max-w-[300px]">{prTitle}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {qaThread?.model && (
+              <span className="text-[10px] font-medium text-slate-400 dark:text-slate-500">{qaThread.model}</span>
+            )}
+            <button
+              type="button"
+              className="rounded-md p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+              onClick={() => setQaOpenFor(null)}
+              aria-label="Close"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {/* Conversation thread */}
+          {qaMessages.length > 0 ? (
+            <div className="flex flex-col gap-3 max-h-[50vh] overflow-y-auto">
+              {qaMessages.map((m, idx) => (
+                <div
+                  key={idx}
+                  className={`rounded-md px-3 py-2 text-sm ${
+                    m.role === "user"
+                      ? "ml-8 border border-indigo-200 bg-indigo-100/60 text-slate-800 dark:border-indigo-700 dark:bg-indigo-950/40 dark:text-slate-200"
+                      : "mr-8 border border-slate-200 bg-white/80 dark:border-slate-700 dark:bg-slate-900/60"
+                  }`}
+                >
+                  <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                    {m.role === "user" ? "You" : `AI${qaThread?.model ? ` · ${qaThread.model}` : ""}`}
+                  </div>
+                  {m.role === "assistant" ? (
+                    <MarkdownBody text={m.content} />
+                  ) : (
+                    <p className="whitespace-pre-wrap">{m.content}</p>
+                  )}
+                  {m.role === "assistant" ? (
+                    <button
+                      type="button"
+                      className="mt-1 text-[10px] text-slate-400 hover:text-indigo-500"
+                      onClick={() => void navigator.clipboard.writeText(m.content)}
+                      title="Copy answer"
+                    >
+                      <span className="flex items-center gap-1">
+                        <Copy className="h-3.5 w-3.5" />
+                        Copy
+                      </span>
+                    </button>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          {qaIsLoading && (
+            <div className="mr-8 rounded-md border border-slate-200 bg-white/80 px-3 py-2 text-xs text-slate-400 dark:border-slate-700 dark:bg-slate-900/60 flex items-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin text-indigo-500" />
+              Thinking…
+            </div>
+          )}
+
+          {qaError && (
+            <p className="rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-xs text-rose-800 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-100">
+              {qaError}
+            </p>
+          )}
+
+          {/* Suggested questions (only when no messages yet) */}
+          {qaMessages.length === 0 && !qaIsLoading && (
+            <div className="flex flex-wrap gap-1.5">
+              {suggestedQuestions(
+                glanceByPr[openPrNumber],
+                insightsByPr[openPrNumber]
+              ).map((q) => (
+                <button
+                  key={q}
+                  type="button"
+                  className="rounded-full border border-indigo-200 bg-white px-2.5 py-1 text-[11px] text-indigo-700 hover:bg-indigo-100 disabled:opacity-40 dark:border-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-300 dark:hover:bg-indigo-900/50"
+                  disabled={qaIsLoading}
+                  onClick={() => void runQa(openPrNumber, q)}
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Input */}
+          <form
+            className="flex gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!qaInput.trim() || qaIsLoading) return;
+              const q = qaInput;
+              setQaInput("");
+              void runQa(openPrNumber, q);
+            }}
+          >
+            <input
+              type="text"
+              className="flex-1 rounded-md border border-indigo-200 bg-white px-3 py-1.5 text-sm outline-none ring-indigo-500/40 placeholder:text-slate-400 focus:border-indigo-400 focus:ring-2 dark:border-indigo-700 dark:bg-slate-950 dark:text-slate-200 dark:placeholder:text-slate-600"
+              placeholder="Ask a question about this PR…"
+              value={qaInput}
+              onChange={(e) => setQaInput(e.target.value)}
+              disabled={qaIsLoading}
+              autoFocus
+            />
+            <button
+              type="submit"
+              className="shrink-0 rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40 flex items-center gap-1.5"
+              disabled={qaIsLoading || !qaInput.trim()}
+            >
+              <Send className="h-4 w-4" />
+              Ask
+            </button>
+          </form>
+
+          {qaMessages.length > 0 && (
+            <button
+              type="button"
+              className="flex items-center gap-1.5 text-[11px] font-medium text-slate-400 hover:text-rose-500 dark:hover:text-rose-400"
+              onClick={() => clearQa(openPrNumber)}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Clear thread
+            </button>
+          )}
+        </div>
+
+        <div className="shrink-0 border-t border-slate-200 px-4 py-3 dark:border-slate-800">
+          <p className="text-[10px] text-slate-500 flex items-center gap-1">
+            <HelpCircle className="h-3.5 w-3.5" />
+            Answers are based on PR diff, comments, CI status, and repo rules. Glance & Review Guide are optional context.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Time-ago helper ────────────────────────────────────────────────── */
 
 function timeAgo(iso: string | null): { text: string; title: string } {
@@ -1080,6 +1318,12 @@ export function Dashboard() {
   const [insightsByPr, setInsightsByPr] = useState<
     Record<number, { loading: boolean; markdown?: string; error?: string }>
   >({});
+
+  const [qaByPr, setQaByPr] = useState<Record<number, QaThread>>({});
+  const [qaLoading, setQaLoading] = useState<number | null>(null);
+  const [qaInput, setQaInput] = useState("");
+  const [qaError, setQaError] = useState<string | null>(null);
+  const [qaOpenFor, setQaOpenFor] = useState<number | null>(null);
 
   const [data, setData] = useState<PrsResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1496,6 +1740,91 @@ export function Dashboard() {
       void runInsights(detailsOpenFor);
     }
   }, [aiMode, detailsOpenFor, glanceByPr, insightsByPr, runGlance, runInsights]);
+
+  // Load persisted Q&A thread when a PR row is expanded
+  useEffect(() => {
+    if (detailsOpenFor === null || !canLoad) return;
+    const existing = qaByPr[detailsOpenFor];
+    if (existing) return;
+    const saved = loadQaThread(owner.trim(), repo.trim(), detailsOpenFor);
+    if (saved.messages.length > 0) {
+      setQaByPr((prev) => ({ ...prev, [detailsOpenFor]: saved }));
+    }
+  }, [detailsOpenFor, canLoad, owner, repo, qaByPr]);
+
+  const runQa = useCallback(
+    async (number: number, question: string) => {
+      if (!canLoad || !aiMode || !question.trim()) return;
+      setQaLoading(number);
+      setQaError(null);
+
+      const prevThread = qaByPr[number] ?? { messages: [] };
+      const userMsg: QaMessage = { role: "user", content: question.trim() };
+      const updatedMessages = [...prevThread.messages, userMsg];
+      setQaByPr((prev) => ({ ...prev, [number]: { ...prevThread, messages: updatedMessages } }));
+
+      try {
+        const gl = glanceByPr[number];
+        const ins = insightsByPr[number];
+
+        const glanceSummary = gl?.summary
+          ? `${gl.summary}\n\n${(gl.walkthrough ?? []).map((w) => `- ${w.file} (${w.change}): ${w.summary}`).join("\n")}`
+          : "";
+
+        const payload: Record<string, unknown> = {
+          owner: owner.trim(),
+          repo: repo.trim(),
+          number,
+          question: question.trim(),
+          history: prevThread.messages,
+          glanceSummary,
+          reviewGuide: ins?.markdown ?? "",
+          repoRulesContext: selectedRulesText,
+        };
+
+        const res = await fetch("/api/qa", {
+          method: "POST",
+          headers: { "content-type": "application/json", ...getSessionHeaders() },
+          body: JSON.stringify(payload),
+        });
+
+        const contentType = res.headers.get("content-type") ?? "";
+        if (!contentType.includes("application/json")) {
+          throw new Error(`Failed to get answer (${res.status}) — server returned non-JSON (possible timeout or server restart needed)`);
+        }
+        const json = (await res.json()) as { model?: string; answer?: string; error?: string };
+        if (!res.ok) throw new Error(json.error ?? `Failed to get answer (${res.status})`);
+
+        const assistantMsg: QaMessage = { role: "assistant", content: json.answer ?? "" };
+        const finalThread: QaThread = {
+          messages: [...updatedMessages, assistantMsg],
+          model: json.model,
+        };
+        setQaByPr((prev) => ({ ...prev, [number]: finalThread }));
+        saveQaThread(owner.trim(), repo.trim(), number, finalThread);
+      } catch (e) {
+        setQaError(e instanceof Error ? e.message : "Failed to get answer");
+        // Remove the optimistic user message on failure
+        setQaByPr((prev) => ({ ...prev, [number]: prevThread }));
+      } finally {
+        setQaLoading(null);
+      }
+    },
+    [aiMode, canLoad, owner, repo, qaByPr, glanceByPr, insightsByPr, selectedRulesText],
+  );
+
+  const clearQa = useCallback(
+    (number: number) => {
+      setQaByPr((prev) => {
+        const next = { ...prev };
+        delete next[number];
+        return next;
+      });
+      if (canLoad) clearQaThread(owner.trim(), repo.trim(), number);
+      setQaError(null);
+    },
+    [canLoad, owner, repo],
+  );
 
   const availableReviewers = useMemo(() => {
     const set = new Set<string>();
@@ -2200,6 +2529,18 @@ export function Dashboard() {
                             >
                               {reviewLoadingFor === p.number ? "Reviewing…" : "AI Review"}
                             </button>
+                            <button
+                              type="button"
+                              className="rounded-md border border-indigo-300 bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-40 dark:border-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 dark:hover:bg-indigo-950/70"
+                              disabled={!aiMode || qaLoading === p.number}
+                              title={!aiMode ? "Enable AI mode to ask questions" : undefined}
+                              onClick={() => setQaOpenFor(p.number)}
+                            >
+                              <span className="flex items-center gap-1">
+                                <MessageSquare className="h-3.5 w-3.5" />
+                                {qaLoading === p.number ? "Asking…" : "Ask Me"}
+                              </span>
+                            </button>
                             {assignedReviewers[p.number]?.length > 0 && (
                               <div className="flex flex-col gap-1">
                                 <span className="text-[10px] font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">Reviewers</span>
@@ -2258,6 +2599,7 @@ export function Dashboard() {
                               </div>
 
                               {aiMode ? (
+                                <>
                                 <div className="grid gap-3 md:grid-cols-2">
                                   {/* Left: At a glance */}
                                   <div className="rounded-lg border border-slate-200 bg-white/60 p-3 dark:border-slate-800 dark:bg-slate-950/40">
@@ -2333,6 +2675,124 @@ export function Dashboard() {
                                     ) : null}
                                   </div>
                                 </div>
+
+                                {/* Ask this PR — Q&A panel */}
+                                {(() => {
+                                  const qa = qaByPr[p.number];
+                                  const messages = qa?.messages ?? [];
+                                  const isLoading = qaLoading === p.number;
+                                  const chips = suggestedQuestions(gl, ins);
+                                  return (
+                                    <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50/30 p-3 dark:border-indigo-800/60 dark:bg-indigo-950/20">
+                                      <div className="flex items-center justify-between">
+                                        <h3 className="bg-gradient-to-r from-indigo-500 via-violet-500 to-indigo-500 bg-clip-text text-sm font-bold uppercase tracking-wide text-transparent dark:from-indigo-400 dark:via-violet-300 dark:to-indigo-400">
+                                          Ask this PR
+                                        </h3>
+                                        {messages.length > 0 ? (
+                                          <button
+                                            type="button"
+                                            className="text-[11px] font-medium text-slate-400 hover:text-rose-500 dark:hover:text-rose-400"
+                                            onClick={() => clearQa(p.number)}
+                                          >
+                                            Clear thread
+                                          </button>
+                                        ) : null}
+                                      </div>
+
+                                      {/* Conversation thread */}
+                                      {messages.length > 0 ? (
+                                        <div className="mt-2 flex max-h-72 flex-col gap-2 overflow-y-auto">
+                                          {messages.map((m, idx) => (
+                                            <div
+                                              key={idx}
+                                              className={`rounded-md px-3 py-2 text-sm ${
+                                                m.role === "user"
+                                                  ? "ml-8 border border-indigo-200 bg-indigo-100/60 text-slate-800 dark:border-indigo-700 dark:bg-indigo-950/40 dark:text-slate-200"
+                                                  : "mr-8 border border-slate-200 bg-white/80 dark:border-slate-700 dark:bg-slate-900/60"
+                                              }`}
+                                            >
+                                              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                                                {m.role === "user" ? "You" : `AI${qa?.model ? ` · ${qa.model}` : ""}`}
+                                              </div>
+                                              {m.role === "assistant" ? (
+                                                <MarkdownBody text={m.content} />
+                                              ) : (
+                                                <p className="whitespace-pre-wrap">{m.content}</p>
+                                              )}
+                                              {m.role === "assistant" ? (
+                                                <button
+                                                  type="button"
+                                                  className="mt-1 text-[10px] text-slate-400 hover:text-indigo-500"
+                                                  onClick={() => void navigator.clipboard.writeText(m.content)}
+                                                  title="Copy answer"
+                                                >
+                                                  Copy
+                                                </button>
+                                              ) : null}
+                                            </div>
+                                          ))}
+                                          {isLoading ? (
+                                            <div className="mr-8 rounded-md border border-slate-200 bg-white/80 px-3 py-2 text-xs text-slate-400 dark:border-slate-700 dark:bg-slate-900/60">
+                                              Thinking…
+                                            </div>
+                                          ) : null}
+                                        </div>
+                                      ) : null}
+
+                                      {qaError ? (
+                                        <p className="mt-2 rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-xs text-rose-800 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-100">
+                                          {qaError}
+                                        </p>
+                                      ) : null}
+
+                                      {/* Suggested questions (only when no messages yet) */}
+                                      {messages.length === 0 ? (
+                                        <div className="mt-2 flex flex-wrap gap-1.5">
+                                          {chips.map((q) => (
+                                            <button
+                                              key={q}
+                                              type="button"
+                                              className="rounded-full border border-indigo-200 bg-white px-2.5 py-1 text-[11px] text-indigo-700 hover:bg-indigo-100 disabled:opacity-40 dark:border-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-300 dark:hover:bg-indigo-900/50"
+                                              disabled={isLoading}
+                                              onClick={() => void runQa(p.number, q)}
+                                            >
+                                              {q}
+                                            </button>
+                                          ))}
+                                        </div>
+                                      ) : null}
+
+                                      {/* Input */}
+                                      <form
+                                        className="mt-2 flex gap-2"
+                                        onSubmit={(e) => {
+                                          e.preventDefault();
+                                          if (!qaInput.trim() || isLoading) return;
+                                          const q = qaInput;
+                                          setQaInput("");
+                                          void runQa(p.number, q);
+                                        }}
+                                      >
+                                        <input
+                                          type="text"
+                                          className="flex-1 rounded-md border border-indigo-200 bg-white px-3 py-1.5 text-sm outline-none ring-indigo-500/40 placeholder:text-slate-400 focus:border-indigo-400 focus:ring-2 dark:border-indigo-700 dark:bg-slate-950 dark:text-slate-200 dark:placeholder:text-slate-600"
+                                          placeholder="Ask a question about this PR…"
+                                          value={qaInput}
+                                          onChange={(e) => setQaInput(e.target.value)}
+                                          disabled={isLoading}
+                                        />
+                                        <button
+                                          type="submit"
+                                          className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40"
+                                          disabled={isLoading || !qaInput.trim()}
+                                        >
+                                          Ask
+                                        </button>
+                                      </form>
+                                    </div>
+                                  );
+                                })()}
+                                </>
                               ) : (
                                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-950/30 dark:text-slate-400">
                                   Enable AI mode to generate glance and reviewer insights for this PR.
@@ -2358,7 +2818,8 @@ export function Dashboard() {
 
       {reviewOpenFor !== null ? (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center dark:bg-black/60">
-          <div className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl dark:border-slate-800 dark:bg-slate-950">
+          <div className="flex max-h-[90vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl dark:border-slate-800 dark:bg-slate-950">
+            {/* Header bar */}
             <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-slate-800">
               <div className="flex items-center gap-2 text-sm font-medium">
                 <span>Review for #{reviewOpenFor}</span>
@@ -2368,8 +2829,6 @@ export function Dashboard() {
                     {(VERDICT_CONFIG[reviewData.verdict] ?? VERDICT_CONFIG.comment).label}
                   </span>
                 ) : null}
-              </div>
-              <div className="flex items-center gap-2">
                 {visibleReviewComments.length ? (
                   <button
                     type="button"
@@ -2392,22 +2851,26 @@ export function Dashboard() {
                     Copy
                   </button>
                 ) : null}
-                <button
-                  type="button"
-                  className="rounded-md px-2 py-1 text-sm text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-900 dark:hover:text-slate-100"
-                  onClick={() => {
-                    setReviewOpenFor(null);
-                    setReviewData(null);
-                    setHiddenSeverities(new Set());
-                    setReviewError(null);
-                    setSubmitResult(null);
-                  }}
-                >
-                  Close
-                </button>
               </div>
+              <button
+                type="button"
+                className="rounded-md px-2 py-1 text-sm text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-900 dark:hover:text-slate-100"
+                onClick={() => {
+                  setReviewOpenFor(null);
+                  setReviewData(null);
+                  setHiddenSeverities(new Set());
+                  setReviewError(null);
+                  setSubmitResult(null);
+                }}
+              >
+                <X className="h-5 w-5" />
+              </button>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto p-4 text-sm">
+
+            {/* Split body: Left = Review, Right = Q&A */}
+            <div className="flex min-h-0 flex-1">
+              {/* ── Left pane: Review ── */}
+              <div className="min-h-0 flex-1 overflow-y-auto border-r border-slate-200 p-4 text-sm dark:border-slate-800">
               {reviewLoadingFor !== null ? <p className="text-slate-400">Generating review…</p> : null}
               {reviewError ? (
                 <p className="rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-rose-800 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-100">
@@ -2429,7 +2892,7 @@ export function Dashboard() {
                 </div>
               ) : null}
 
-              {/* Main review comment (posted as the top-level body on GitHub) */}
+              {/* Main review comment */}
               {reviewData && reviewLoadingFor === null ? (
                 <div className="mb-4 rounded-lg border border-indigo-200 bg-indigo-50/50 p-3 dark:border-indigo-800 dark:bg-indigo-950/30">
                   <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-indigo-600 dark:text-indigo-400">
@@ -2510,10 +2973,153 @@ export function Dashboard() {
                   </div>
                 </div>
               ) : null}
+              </div>
+
+              {/* ── Right pane: Ask about this PR ── */}
+              <div className="flex w-[340px] shrink-0 flex-col bg-slate-50/50 dark:bg-slate-900/30">
+                {/* Q&A header */}
+                <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-3 py-2.5 dark:border-slate-800">
+                  <h3 className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-indigo-600 dark:text-indigo-400">
+                    <MessageSquare className="h-3.5 w-3.5" />
+                    Ask about this PR
+                  </h3>
+                  <div className="flex items-center gap-2">
+                    {qaByPr[reviewOpenFor]?.model ? (
+                      <span className="text-[10px] text-slate-400">{qaByPr[reviewOpenFor].model}</span>
+                    ) : null}
+                    {(qaByPr[reviewOpenFor]?.messages?.length ?? 0) > 0 ? (
+                      <button
+                        type="button"
+                        className="flex items-center gap-1 text-[10px] font-medium text-slate-400 hover:text-rose-500 dark:hover:text-rose-400"
+                        onClick={() => clearQa(reviewOpenFor)}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                        Clear
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+
+                {/* Q&A messages */}
+                <div className="flex-1 overflow-y-auto p-3 space-y-2">
+                  {(qaByPr[reviewOpenFor]?.messages ?? []).length > 0 ? (
+                    (qaByPr[reviewOpenFor]?.messages ?? []).map((m, idx) => (
+                      <div
+                        key={idx}
+                        className={`rounded-md px-2.5 py-2 text-xs ${
+                          m.role === "user"
+                            ? "ml-4 border border-indigo-200 bg-indigo-100/60 text-slate-800 dark:border-indigo-700 dark:bg-indigo-950/40 dark:text-slate-200"
+                            : "mr-4 border border-slate-200 bg-white/80 dark:border-slate-700 dark:bg-slate-900/60"
+                        }`}
+                      >
+                        <div className="mb-1 text-[9px] font-semibold uppercase tracking-wide text-slate-400">
+                          {m.role === "user" ? "You" : `AI${qaByPr[reviewOpenFor]?.model ? ` · ${qaByPr[reviewOpenFor].model}` : ""}`}
+                        </div>
+                        {m.role === "assistant" ? (
+                          <MarkdownBody text={m.content} />
+                        ) : (
+                          <p className="whitespace-pre-wrap">{m.content}</p>
+                        )}
+                        {m.role === "assistant" ? (
+                          <button
+                            type="button"
+                            className="mt-1 flex items-center gap-1 text-[9px] text-slate-400 hover:text-indigo-500"
+                            onClick={() => void navigator.clipboard.writeText(m.content)}
+                          >
+                            <Copy className="h-3 w-3" />
+                            Copy
+                          </button>
+                        ) : null}
+                      </div>
+                    ))
+                  ) : null}
+
+                  {qaLoading === reviewOpenFor ? (
+                    <div className="mr-4 flex items-center gap-1.5 rounded-md border border-slate-200 bg-white/80 px-2.5 py-2 text-xs text-slate-400 dark:border-slate-700 dark:bg-slate-900/60">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin text-indigo-500" />
+                      Thinking…
+                    </div>
+                  ) : null}
+
+                  {qaError && qaLoading === null ? (
+                    <p className="rounded-md border border-rose-300 bg-rose-50 px-2 py-1.5 text-[11px] text-rose-800 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-100">
+                      {qaError}
+                    </p>
+                  ) : null}
+
+                  {/* Suggested questions when empty */}
+                  {(qaByPr[reviewOpenFor]?.messages ?? []).length === 0 && qaLoading !== reviewOpenFor ? (
+                    <div className="space-y-3">
+                      <p className="flex items-center gap-1 text-[11px] text-slate-400">
+                        <HelpCircle className="h-3.5 w-3.5" />
+                        Ask anything about the diff, review, CI, or repo rules.
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {suggestedQuestions(glanceByPr[reviewOpenFor], insightsByPr[reviewOpenFor]).map((q) => (
+                          <button
+                            key={q}
+                            type="button"
+                            className="rounded-full border border-indigo-200 bg-white px-2 py-0.5 text-[10px] text-indigo-700 hover:bg-indigo-100 dark:border-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-300 dark:hover:bg-indigo-900/50"
+                            onClick={() => void runQa(reviewOpenFor, q)}
+                          >
+                            {q}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+
+                {/* Q&A input (pinned to bottom) */}
+                <div className="shrink-0 border-t border-slate-200 p-3 dark:border-slate-800">
+                  <form
+                    className="flex gap-2"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (!qaInput.trim() || qaLoading === reviewOpenFor) return;
+                      const q = qaInput;
+                      setQaInput("");
+                      void runQa(reviewOpenFor, q);
+                    }}
+                  >
+                    <input
+                      type="text"
+                      className="flex-1 rounded-md border border-indigo-200 bg-white px-2.5 py-1.5 text-xs outline-none ring-indigo-500/40 placeholder:text-slate-400 focus:border-indigo-400 focus:ring-2 dark:border-indigo-700 dark:bg-slate-950 dark:text-slate-200 dark:placeholder:text-slate-600"
+                      placeholder="Ask about this PR…"
+                      value={qaInput}
+                      onChange={(e) => setQaInput(e.target.value)}
+                      disabled={qaLoading === reviewOpenFor}
+                    />
+                    <button
+                      type="submit"
+                      className="shrink-0 rounded-md bg-indigo-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40 flex items-center gap-1"
+                      disabled={qaLoading === reviewOpenFor || !qaInput.trim()}
+                    >
+                      <Send className="h-3.5 w-3.5" />
+                    </button>
+                  </form>
+                </div>
+              </div>
             </div>
           </div>
         </div>
       ) : null}
-    </div>
+
+    <AskMeModal
+      qaOpenFor={qaOpenFor}
+      setQaOpenFor={setQaOpenFor}
+      qaByPr={qaByPr}
+      qaLoading={qaLoading}
+      qaInput={qaInput}
+      setQaInput={setQaInput}
+      qaError={qaError}
+      data={data}
+      glanceByPr={glanceByPr}
+      insightsByPr={insightsByPr}
+      runQa={runQa}
+      clearQa={clearQa}
+    />
+
+  </div>
   );
 }
